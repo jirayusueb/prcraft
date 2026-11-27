@@ -154,11 +154,11 @@ fn joined(answers: Vec<HostRead>, signed_out: Vec<String>) -> MineState {
     for (host, answer) in answers {
         match answer {
             Ok((found, cut)) => {
-                hosts.push(HostAnswer { host, listed: found.len(), truncated: cut, error: None });
+                hosts.push(HostAnswer { host, listed: found.len(), truncated: cut, error: None, account: None });
                 truncated |= cut;
                 changes.extend(found);
             }
-            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error) }),
+            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error), account: None }),
         }
     }
     changes.sort_by_key(|m| std::cmp::Reverse(m.change.updated_at));

@@ -101,6 +101,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Equals", "="),
     ("OpenBracket", "["),
     ("CloseBracket", "]"),
+    ("Questionmark", "?"),
 ];
 
 /// Every character a [`Binding::label`] can hold: the four modifier symbols and each key's label. A font that draws all of
@@ -257,6 +258,9 @@ pub const ACTIONS: &[Action] = &[
     typing("review.stop_runs", Scope::Review, "Stop this change's AI runs", "Period", &[Cmd]),
     act("review.keep_ai", Scope::Review, "Keep the AI draft", "A", &[]),
     act("review.keep_ai_edit", Scope::Review, "Keep the AI draft and edit it", "A", &[Shift]),
+    typing("review.visualize", Scope::Review, "Visualize the change", "V", &[Shift, Cmd]),
+    typing("review.filter", Scope::Review, "Filter files", "F", &[Cmd]),
+    act("review.files_layout", Scope::Review, "Files as tree or list", "T", &[Alt]),
     act("review.discard_ai", Scope::Review, "Discard the AI draft", "X", &[]),
     act("review.next_ai", Scope::Review, "Next AI draft", "ArrowDown", &[Alt]),
     act("review.prev_ai", Scope::Review, "Previous AI draft", "ArrowUp", &[Alt]),
@@ -349,6 +353,9 @@ pub const ACTIONS: &[Action] = &[
     act("settings.next", Scope::Settings, "Next in the list", "J", &[]),
     act("settings.prev", Scope::Settings, "Previous in the list", "K", &[]),
     act("settings.preview", Scope::Settings, "Preview the AI review", "P", &[]),
+    typing("app.left_pane", Scope::Everywhere, "Hide or show the left pane", "OpenBracket", &[Modifier::Ctrl, Cmd]),
+    typing("app.right_pane", Scope::Everywhere, "Hide or show the right pane", "CloseBracket", &[Modifier::Ctrl, Cmd]),
+    act("app.shortcuts", Scope::Everywhere, "Show every shortcut", "Questionmark", &[]),
 ];
 
 pub fn action(id: &str) -> Option<&'static Action> {

@@ -45,7 +45,7 @@ impl MineSync {
     pub(crate) fn fixture(forge: Forge, changes: Vec<Mine>) -> Self {
         let listed = changes.len();
         let host = forge.default_host().to_string();
-        let hosts = vec![pr_craft_engine::HostAnswer { host, listed, truncated: false, error: None }];
+        let hosts = vec![pr_craft_engine::HostAnswer { host, listed, truncated: false, error: None, account: None }];
         MineSync { forge, rx: None, state: Some(MineState::Listed { changes, truncated: false, hosts, signed_out: Vec::new() }), stale: None }
     }
 

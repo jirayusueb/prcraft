@@ -459,6 +459,9 @@ pub struct HostAnswer {
     /// The host could not be read; its changes are missing from the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The account the CLI acts as on this host, for the reader's initials in the title bar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 impl SourceState {
@@ -496,9 +499,11 @@ pub fn inbox_source(forge: Forge) -> InboxSource {
                 SourceState::Paused { login: Login::LoggedOut { fix: format!("{} auth login", forge.cli()) } }
             } else {
                 let answers: Vec<_> = std::thread::scope(|scope| {
-                    let jobs: Vec<_> =
-                        signed.iter().map(|h| (h.name.clone(), scope.spawn(move || pr_craft_forge::review_requested_on(forge, &h.name)))).collect();
-                    jobs.into_iter().map(|(host, job)| (host, job.join().unwrap_or_else(|_| Err("the read stopped".into())))).collect()
+                    let jobs: Vec<_> = signed
+                        .iter()
+                        .map(|h| (h.name.clone(), h.account.clone(), scope.spawn(move || pr_craft_forge::review_requested_on(forge, &h.name))))
+                        .collect();
+                    jobs.into_iter().map(|(host, account, job)| (host, account, job.join().unwrap_or_else(|_| Err("the read stopped".into())))).collect()
                 });
                 listed(forge, answers, signed_out)
             }
@@ -507,24 +512,24 @@ pub fn inbox_source(forge: Forge) -> InboxSource {
     InboxSource { forge, cli: forge.cli(), state }
 }
 
-/// One host's answer to `review_requested_on`, named by host.
-type HostRead = (String, Result<(Vec<Change>, bool), String>);
+/// One host's answer to `review_requested_on`, named by host, with the account read there.
+type HostRead = (String, Option<String>, Result<(Vec<Change>, bool), String>);
 
 /// Joins per-host answers: Listed while any host answered (failures stay in `hosts`), Failed when none did.
 fn listed(forge: Forge, answers: Vec<HostRead>, signed_out: Vec<String>) -> SourceState {
-    if answers.iter().all(|(_, a)| a.is_err()) {
-        let error = answers.iter().filter_map(|(host, a)| a.as_ref().err().map(|e| format!("{host}: {e}"))).collect::<Vec<_>>().join("; ");
+    if answers.iter().all(|(_, _, a)| a.is_err()) {
+        let error = answers.iter().filter_map(|(host, _, a)| a.as_ref().err().map(|e| format!("{host}: {e}"))).collect::<Vec<_>>().join("; ");
         return SourceState::Failed { error };
     }
     let (mut changes, mut hosts, mut truncated) = (Vec::new(), Vec::new(), false);
-    for (host, answer) in answers {
+    for (host, account, answer) in answers {
         match answer {
             Ok((found, cut)) => {
-                hosts.push(HostAnswer { host, listed: found.len(), truncated: cut, error: None });
+                hosts.push(HostAnswer { host, listed: found.len(), truncated: cut, error: None, account });
                 truncated |= cut;
                 changes.extend(found);
             }
-            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error) }),
+            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error), account }),
         }
     }
     changes.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
@@ -544,14 +549,14 @@ mod tests {
     fn a_failed_host_keeps_the_others_listed_but_the_list_is_not_an_all_clear() {
         // An empty answer from one host and a failure from another: nothing listed, and still not "nothing waits on you".
         let partial =
-            listed(Forge::GitLab, vec![("gitlab.acme.dev".into(), Ok((Vec::new(), false))), ("gitlab.com".into(), Err("401".into()))], vec![]);
+            listed(Forge::GitLab, vec![("gitlab.acme.dev".into(), None, Ok((Vec::new(), false))), ("gitlab.com".into(), None, Err("401".into()))], vec![]);
         let SourceState::Listed { hosts, changes, .. } = &partial else { panic!("one host answered, so the source is listed: {partial:?}") };
         assert!(changes.is_empty());
         assert_eq!(hosts.iter().filter(|h| h.error.is_some()).count(), 1);
         assert!(partial.incomplete(), "a host that failed leaves changes out");
-        let clear = listed(Forge::GitLab, vec![("gitlab.acme.dev".into(), Ok((Vec::new(), false)))], vec!["gitlab.com".into()]);
+        let clear = listed(Forge::GitLab, vec![("gitlab.acme.dev".into(), None, Ok((Vec::new(), false)))], vec!["gitlab.com".into()]);
         assert!(!clear.incomplete(), "a signed-out host the user never set up does not block the all-clear");
-        let none = listed(Forge::GitLab, vec![("gitlab.com".into(), Err("401".into()))], vec![]);
+        let none = listed(Forge::GitLab, vec![("gitlab.com".into(), None, Err("401".into()))], vec![]);
         assert!(matches!(none, SourceState::Failed { ref error } if error.contains("gitlab.com")), "no host answered: {none:?}");
     }
 }
