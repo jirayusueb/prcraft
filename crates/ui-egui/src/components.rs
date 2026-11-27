@@ -109,6 +109,20 @@ pub(crate) fn mono_label(ui: &mut Ui, text: impl Into<String>, px: f32, colour: 
     ui.label(RichText::new(text.into()).font(mono(ui, px)).color(colour))
 }
 
+/// [`mono_label`] cut with an ellipsis at `max` px; its accessible name keeps the whole text.
+pub(crate) fn mono_label_cut(ui: &mut Ui, text: impl Into<String>, px: f32, colour: Color32, max: f32) -> Response {
+    let text = text.into();
+    let (rect, response) = ui.allocate_exact_size(vec2(mono_width(ui, &text, px).min(max.max(16.0)), 18.0), Sense::hover());
+    put(ui, fit(ui, &text, mono(ui, px), colour, rect.width()), rect.left(), rect.center().y);
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text.clone()));
+    response
+}
+
+/// The width `text` takes in the code font at `px`.
+pub(crate) fn mono_width(ui: &Ui, text: &str, px: f32) -> f32 {
+    galley(ui, text, mono(ui, px), Color32::PLACEHOLDER).size().x
+}
+
 /// A wrapping line or paragraph of secondary text at the caption size.
 pub(crate) fn note(ui: &mut Ui, text: impl Into<String>, colour: Color32) -> Response {
     note_sized(ui, text, 11.5, colour)
@@ -1181,28 +1195,177 @@ pub(crate) fn empty_pane(ui: &mut Ui, title: &str, body: &str) {
 pub(crate) fn comment_card(ui: &mut Ui, width: f32, kind: CardKind, who: &str, tag_text: &str, add: impl FnOnce(&mut Ui)) {
     let p = theme::pal(ui);
     let edge = if kind == CardKind::Ai { p.haze } else { p.border_strong };
-    card_band(ui, width, edge, |ui| {
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                if kind == CardKind::Ai {
-                    ai_mark(ui);
-                } else {
-                    avatar(ui, who, 20.0);
-                }
-                label(ui, who, 13.0, p.graphite);
-                tag(ui, TagKind::OnTheWay, tag_text);
-            });
-            ui.add_space(6.0);
-            ui.horizontal_top(|ui| {
-                ui.add_space(28.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    add(ui);
-                });
+    card_band(ui, width, edge, |ui| card_content(ui, kind, who, tag_text, add));
+}
+
+/// [`comment_card`] with no line to sit between (frame 79, under a rendered SVG): the card 24 px in from the pane and 14 px
+/// from what is above and below it, on the pane's own ground.
+pub(crate) fn loose_comment_card(ui: &mut Ui, width: f32, kind: CardKind, who: &str, tag_text: &str, add: impl FnOnce(&mut Ui)) {
+    let p = theme::pal(ui);
+    let edge = if kind == CardKind::Ai { p.haze } else { p.border_strong };
+    padded(ui, Margin { left: 24, right: 24, top: 14, bottom: 14 }, |ui| {
+        egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, edge)).corner_radius(8).inner_margin(13).show(ui, |ui| {
+            ui.set_width((width - 48.0 - 26.0).clamp(200.0, 594.0));
+            card_content(ui, kind, who, tag_text, add);
+        });
+    });
+}
+
+/// The head of a comment card (avatar or AI mark, the name, a tag) and `add` under it, in line with the name.
+fn card_content(ui: &mut Ui, kind: CardKind, who: &str, tag_text: &str, add: impl FnOnce(&mut Ui)) {
+    let p = theme::pal(ui);
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if kind == CardKind::Ai {
+                ai_mark(ui);
+            } else {
+                avatar(ui, who, 20.0);
+            }
+            label(ui, who, 13.0, p.graphite);
+            tag(ui, TagKind::OnTheWay, tag_text);
+        });
+        ui.add_space(6.0);
+        ui.horizontal_top(|ui| {
+            ui.add_space(28.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                add(ui);
             });
         });
     });
+}
+
+// ---- SVG compare and markup (frame 79) ----
+
+/// What one side of an SVG compare shows in its box.
+pub(crate) enum SvgPicture<'a> {
+    Drawn { texture: egui::TextureId, size: egui::Vec2 },
+    /// Nothing drawn, and why: the change adds or deletes the file, or the side could not be read or drawn.
+    Note(&'a str),
+}
+
+/// One side of an SVG compare, 240 × 206: a dot and its name with the file's size on the right, the drawing centred on a
+/// checkerboard in a 240 × 160 box, and a caption under the box.
+pub(crate) fn svg_side(ui: &mut Ui, name: &str, dot: Color32, size: &str, picture: SvgPicture<'_>, caption: &str) -> Response {
+    let p = theme::pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(theme::SVG_BOX_W, 206.0), Sense::hover());
+    ui.painter().circle_filled(pos2(rect.left() + 3.0, rect.top() + 8.0), 3.0, dot);
+    put(ui, galley(ui, name, sans(ui, 12.5), p.graphite), rect.left() + 12.0, rect.top() + 8.0);
+    put_right(ui, galley(ui, size, mono(ui, 11.5), p.text_tertiary), rect.right(), rect.top() + 8.0);
+    let frame = Rect::from_min_size(pos2(rect.left(), rect.top() + 24.0), vec2(theme::SVG_BOX_W, theme::SVG_BOX_H));
+    checker(ui, frame);
+    let alt = match picture {
+        SvgPicture::Drawn { texture, size: drawn } => {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            ui.painter().image(texture, Rect::from_center_size(frame.center(), drawn), uv, Color32::WHITE);
+            format!("{name}, {size}, {caption}")
+        }
+        SvgPicture::Note(text) => {
+            let note = ui.painter().layout(text.to_string(), sans(ui, 11.5), p.text_secondary, theme::SVG_ROOM_W);
+            let at = frame.center() - note.size() / 2.0;
+            let backing = Rect::from_min_size(at, note.size()).expand2(vec2(6.0, 4.0));
+            ui.painter().rect_filled(backing, radius(4.0), p.raised);
+            ui.painter().galley(at, note, Color32::PLACEHOLDER);
+            format!("{name}: {text}")
+        }
+    };
+    ui.painter().rect_stroke(frame, radius(6.0), Stroke::new(theme::sz(ui).hairline, p.border), StrokeKind::Inside);
+    put(ui, galley(ui, caption, sans(ui, 11.0), p.text_tertiary), rect.left(), rect.top() + 199.0);
+    response.widget_info(|| WidgetInfo::labeled(Role::Image, true, alt.clone()));
+    response
+}
+
+/// The transparency checkerboard of an SVG box: raised squares and hover squares, the corner squares rounded with the box.
+fn checker(ui: &Ui, frame: Rect) {
+    let p = theme::pal(ui);
+    ui.painter().rect_filled(frame, radius(6.0), p.raised);
+    let step = theme::SVG_CHECKER;
+    let (cols, rows) = ((frame.width() / step).ceil() as usize, (frame.height() / step).ceil() as usize);
+    for row in 0..rows {
+        for col in (0..cols).filter(|col| (col + row) % 2 == 1) {
+            let square = Rect::from_min_size(frame.min + vec2(col as f32 * step, row as f32 * step), vec2(step, step)).intersect(frame);
+            let corner = |at_col: bool, at_row: bool| if at_col && at_row { 6 } else { 0 };
+            let (first_col, last_col, first_row, last_row) = (col == 0, col + 1 == cols, row == 0, row + 1 == rows);
+            let round = CornerRadius {
+                nw: corner(first_col, first_row),
+                ne: corner(last_col, first_row),
+                sw: corner(first_col, last_row),
+                se: corner(last_col, last_row),
+            };
+            ui.painter().rect_filled(square, round, p.hover);
+        }
+    }
+}
+
+/// The heading over an SVG's markup rows, with the view the view key goes to next on the right (`Structure ⇧S`).
+pub(crate) fn svg_markup_head(ui: &mut Ui, width: f32, next: &str) -> Response {
+    let p = theme::pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+    let title = "What changed in the markup";
+    put(ui, galley(ui, title, sans(ui, 12.0), p.text_secondary), rect.left() + 24.0, rect.center().y);
+    put_right(ui, galley(ui, next, sans(ui, 11.5), p.text_tertiary), rect.right() - 24.0, rect.center().y);
+    response.widget_info(|| WidgetInfo::labeled(Role::Heading, true, format!("{title}. {next}")));
+    response
+}
+
+/// What a markup row says about its value.
+pub(crate) enum MarkupValue<'a> {
+    Same(&'a str),
+    Changed(&'a str, &'a str),
+    Added(&'a str),
+    Removed(&'a str),
+}
+
+/// One row of what changed in an SVG's markup: the element and attribute in the code font, then the old value in a rose chip,
+/// an arrow and the new value in a moss chip; an unchanged value as plain text. 24 px in from the pane. Pressing it picks it.
+pub(crate) fn svg_markup_row(ui: &mut Ui, width: f32, what: &str, value: &MarkupValue<'_>, selected: bool) -> Response {
+    let p = theme::pal(ui);
+    let height = if matches!(value, MarkupValue::Same(_)) { 24.0 } else { 26.0 };
+    let (outer, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let rect = Rect::from_min_max(pos2(outer.left() + 24.0, outer.top()), pos2(outer.right() - 24.0, outer.bottom()));
+    if let Some(fill) = quiet_fill(ui, &response, true).or(selected.then_some(p.hover)) {
+        ui.painter().rect_filled(rect, radius(6.0), fill);
+    }
+    let y = rect.center().y;
+    let x = put(ui, galley(ui, what, mono(ui, 12.0), p.text_secondary), rect.left() + 13.0, y) + 12.0;
+    let room = (rect.right() - 8.0 - x).max(40.0);
+    let chip = |ui: &Ui, text: &str, left: f32, max: f32, added: bool| {
+        let (bg, gutter, ink) = if added { (p.moss_bg, p.moss_gutter, p.moss_text) } else { (p.rose_bg, p.rose_gutter, p.rose_text) };
+        let text = fit(ui, text, mono(ui, 12.0), ink, (max - 8.0).max(8.0));
+        let chip = Rect::from_min_size(pos2(left, y - 9.0), vec2(text.size().x + 8.0, 18.0));
+        ui.painter().rect_filled(chip, radius(3.0), bg);
+        ui.painter().rect_filled(chip, radius(3.0), gutter);
+        put(ui, text, left + 4.0, y);
+        chip.right()
+    };
+    let said = match value {
+        MarkupValue::Same(text) => {
+            let shown = format!("{text} · unchanged");
+            put(ui, fit(ui, &shown, mono(ui, 12.0), p.text_tertiary, room), x, y);
+            shown
+        }
+        MarkupValue::Changed(old, new) => {
+            let each = (room - 34.0) / 2.0;
+            let right = chip(ui, old, x, each, false);
+            let arrow = put(ui, galley(ui, "→", sans(ui, 12.0), p.text_tertiary), right + 12.0, y);
+            chip(ui, new, arrow + 12.0, each, true);
+            format!("{old} changed to {new}")
+        }
+        MarkupValue::Added(text) => {
+            let shown = if text.is_empty() { "added".to_string() } else { format!("added: {text}") };
+            chip(ui, &shown, x, room, true);
+            shown
+        }
+        MarkupValue::Removed(text) => {
+            let shown = if text.is_empty() { "removed".to_string() } else { format!("removed: {text}") };
+            chip(ui, &shown, x, room, false);
+            shown
+        }
+    };
+    ring(ui, &response, rect, 6.0);
+    response.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, format!("{what}: {said}")));
+    response
 }
 
 /// One comment of a thread: an avatar chip, the author and when, then the text under them.

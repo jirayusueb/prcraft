@@ -257,7 +257,7 @@ mod tests {
     }
 
     fn draft(start: Option<LineRef>, end: LineRef) -> Draft {
-        Draft { id: 1, path: "src/retry.go".into(), old_path: None, start, end, body: "Why 3?".into() }
+        Draft { id: 1, path: "src/retry.go".into(), old_path: None, start, end, body: "Why 3?".into(), on_rendered: false }
     }
 
     const ADDED: LineRef = LineRef { old: None, new: Some(42) };

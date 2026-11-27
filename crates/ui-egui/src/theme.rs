@@ -505,9 +505,14 @@ pub const STACK_STRIP_HEIGHT: f32 = 120.0;
 pub const IMAGE_MAX_HEIGHT: f32 = 480.0;
 /// Images with no side longer than this grow, up to four times, so an icon is visible.
 pub const SMALL_IMAGE: f32 = 128.0;
-/// SVGs are drawn at twice the size they are shown, so edges stay sharp.
-pub const SVG_RENDER: f32 = 384.0;
-pub const SVG_SHOWN: f32 = 192.0;
+/// One side of the SVG compare (frame 79): the checkerboard box, its squares, the room the drawing may fill in it, and how
+/// far a small drawing grows (a 24 px icon shows at 60 px). The drawing is rasterised at twice the size it is shown.
+pub const SVG_BOX_W: f32 = 240.0;
+pub const SVG_BOX_H: f32 = 160.0;
+pub const SVG_CHECKER: f32 = 8.0;
+pub const SVG_ROOM_W: f32 = 200.0;
+pub const SVG_ROOM_H: f32 = 120.0;
+pub const SVG_GROW: f32 = 2.5;
 /// Lines of one rendered block or cell that are laid out; the rest shows as a count and the source view has them all.
 pub const MAX_BLOCK_LINES: usize = 60;
 /// How far below and above the window a file's header may be before its rendered view starts loading.

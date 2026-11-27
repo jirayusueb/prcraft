@@ -254,6 +254,7 @@ mod tests {
             start: None,
             end: LineRef { old: None, new: Some(2) },
             body: "SENTINEL_COMMENT".into(),
+            on_rendered: false,
         };
         let second = Draft { id: 2, body: "SENTINEL_COMMENT_TWO".into(), ..draft.clone() };
         let local = LocalReview { drafts: vec![draft, second], body: "SENTINEL_BODY".into(), ..LocalReview::default() };

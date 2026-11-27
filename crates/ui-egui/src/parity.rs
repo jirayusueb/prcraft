@@ -161,6 +161,7 @@ fn review_screen_with(from_back: bool, inline: bool) -> (ReviewScreen, Runs) {
         start: None,
         end: LineRef { old: None, new: Some(line) },
         body: body.into(),
+        on_rendered: false,
     };
     let viewed: BTreeMap<String, u64> =
         files.iter().filter(|f| f.path.ends_with("_test.go") || f.path.ends_with("tx.go")).map(|f| (f.path.clone(), f.hash)).collect();
@@ -506,6 +507,7 @@ fn retry_view() -> ReviewView {
         start: None,
         end: LineRef { old: None, new: Some(35) },
         body: "backoff cap is hard-coded".into(),
+        on_rendered: false,
     };
     let local = LocalReview { drafts: vec![draft], next_id: 2, anchor: Some(anchor.clone()), ..LocalReview::default() };
     let meta = ChangeMeta {
@@ -545,6 +547,75 @@ fn review_over(screen: ReviewScreen, runs: Runs) -> PrCraftApp {
     app.review = Some(screen);
     app
 }
+
+/// Figma frame 79: `src/icons/retry.svg` before and after (412 B and 538 B, the arrow drawn with 31 and 46 points), and its diff.
+const RETRY_SVG_OLD: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#1d1c21" stroke-linecap="round" stroke-linejoin="round">
+  <path id="arrow" fill="none"
+      d="M4 12a8 8 0 1 0 2.3-5.7M4 12l-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25M4 12l.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25"
+      stroke-width="1.5"
+  />
+</svg>
+"##;
+const RETRY_SVG_NEW: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#1d1c21" stroke-linecap="round" stroke-linejoin="round">
+  <path fill="none" id="arrow"
+        d="M3 11a9 9 0 0 1 15-5.3v-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2M18 5.7h-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2" stroke-width="2"/>
+  <path id="tail" data-name="second arrow" stroke-width="2"
+        d="M21 13a9 9 0 0 1-15 5.3v.75 .75 .75 .75 .75 .75M6 18.3h.7 .7 .7 .7 .7 .7"/>
+  <title>Retry</title>
+
+</svg>
+"##;
+const RETRY_SVG_DIFF: &str = r##"diff --git a/src/icons/retry.svg b/src/icons/retry.svg
+--- a/src/icons/retry.svg
++++ b/src/icons/retry.svg
+@@ -1,6 +1,8 @@
+ <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#1d1c21" stroke-linecap="round" stroke-linejoin="round">
+-  <path id="arrow" fill="none"
+-      d="M4 12a8 8 0 1 0 2.3-5.7M4 12l-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25-.25.25M4 12l.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25.3.25"
+-      stroke-width="1.5"
+-  />
++  <path fill="none" id="arrow"
++        d="M3 11a9 9 0 0 1 15-5.3v-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2M18 5.7h-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2-.2" stroke-width="2"/>
++  <path id="tail" data-name="second arrow" stroke-width="2"
++        d="M21 13a9 9 0 0 1-15 5.3v.75 .75 .75 .75 .75 .75M6 18.3h.7 .7 .7 .7 .7 .7"/>
++  <title>Retry</title>
++
+ </svg>
+"##;
+
+/// Figma frame 79: an icon change drawn before and after, what changed in its markup, and a draft written on the rendered view.
+fn svg_app() -> PrCraftApp {
+    let change = ChangeRef { forge: Forge::GitHub, repo: "acme/web".into(), number: 2231, host: None };
+    let anchor = Anchor { head_sha: "abc".into(), base_sha: None, start_sha: None };
+    let mut files = parse_unified(RETRY_SVG_DIFF);
+    files.push(plain_file("src/icons/sync.svg", FileStatus::Modified, 3, 3));
+    files.push(plain_file("src/icons/index.ts", FileStatus::Modified, 1, 0));
+    let viewed = files.iter().filter(|f| f.path.ends_with("sync.svg")).map(|f| (f.path.clone(), f.hash)).collect();
+    let draft = Draft {
+        id: 1,
+        path: "src/icons/retry.svg".into(),
+        old_path: None,
+        start: None,
+        end: LineRef { old: None, new: Some(3) },
+        body: "At 16 px the two arrowheads merge into one blob. Check it in the toolbar at 1×.".into(),
+        on_rendered: true,
+    };
+    let local = LocalReview { drafts: vec![draft], viewed, next_id: 2, anchor: Some(anchor.clone()), ..LocalReview::default() };
+    let meta = ChangeMeta {
+        title: "Use the two-arrow retry icon".into(),
+        author: "dev.sato".into(),
+        url: "https://github.com/acme/web/pull/2231".into(),
+        head_branch: "dev.sato/retry-icon".into(),
+        base_branch: "main".into(),
+        head_sha: "abc".into(),
+        base_sha: None,
+        diff_refs: None,
+    };
+    let view = ReviewView { change, meta, anchor, stale: false, files, local, filter: Vec::new(), layout: Default::default() };
+    let screen = ReviewScreen::fixture(view, Vec::new(), false).with_svg("src/icons/retry.svg", RETRY_SVG_OLD, RETRY_SVG_NEW);
+    review_over(screen, Runs::default())
+}
+
 
 /// Figma frame 103: lines 42 to 44 of `invoicer.go` selected, ready for a right-click.
 fn lines_app() -> PrCraftApp {
@@ -870,6 +941,24 @@ fn open_locally_names_its_choices_and_a_refused_one_says_why() {
     assert!(named(&dirty, Role::Button, "Check out here. The clone has uncommitted changes"), "the refusal is part of the choice's name");
     let setup = harness(local_app(LocalCase::NoClone), 1440.0, 900.0);
     assert!(named(&setup, Role::Button, "Check out in a worktree. No local clone"), "with no clone the worktree choice says to register one");
+}
+
+#[test]
+fn an_svg_change_names_its_pictures_markup_rows_and_draft_to_assistive_technology() {
+    let harness = harness(svg_app(), 1440.0, 900.0);
+    for picture in ["Before, 412 B, 24 × 24 viewBox · shown at 60 px", "After, 538 B"] {
+        assert!(named(&harness, Role::Image, picture), "no picture is named {picture:?}");
+    }
+    let rows = [
+        "<path#arrow> d: M4 12a8 8 0 1 0 2.3-5.7 (31 points) changed to M3 11a9 9 0 0 1 15-5.3 (46 points)",
+        "<path#arrow> stroke-width: 1.5 changed to 2",
+        "<path#tail>: added: second arrow, 15 points",
+        "<title>: added: \"Retry\"",
+    ];
+    for name in rows.iter().copied().chain(["Edit  E"]) {
+        assert!(named(&harness, Role::Button, name), "no button is named {name:?}");
+    }
+    assert!(named(&harness, Role::RadioButton, "Structure, File view"));
 }
 
 #[test]
@@ -1361,6 +1450,11 @@ mod renders {
     #[test]
     fn the_split_view_renders_at_the_size_of_the_figma_frame() {
         render(split_app(true), 1440.0, 900.0, "91-split.png");
+    }
+
+    #[test]
+    fn the_svg_review_renders_at_the_size_of_the_figma_frame() {
+        render(svg_app(), 1440.0, 900.0, "79-svg.png");
     }
 
     #[test]

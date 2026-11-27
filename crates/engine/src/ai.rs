@@ -1119,6 +1119,7 @@ fn draft_keep(env: &Env, change: &ChangeRef, id: &str) -> Result<Kept, CommandEr
             end: finding.line,
             body: finding.body,
             anchor: run.anchor.clone(),
+            on_rendered: false,
         };
         // A retry after a failed save of the run finds the draft the first try added, and reuses it instead of adding another.
         let earlier = store::load_review(&env.dir, change).map_err(store_err)?;
@@ -1440,6 +1441,7 @@ index 0000000..3333333
                 end: pr_craft_core::review::LineRef { old: None, new: Some(1) },
                 body: "mine".into(),
                 anchor: Anchor { head_sha: "older".into(), base_sha: None, start_sha: None },
+                on_rendered: false,
             },
         )
         .expect("a draft on an older commit");

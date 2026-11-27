@@ -1,7 +1,7 @@
 //! File views of the review diff: rendered Markdown, image compare, SVG and notebook cells (Figma frames 25, 69, 26, 78, 79, 80).
 //! Every rendered view reads the same diff the source view draws, and says how to get back to it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -15,10 +15,12 @@ use craft::markdown::{Refs, parse_inlines};
 use pr_craft_core::ChangeRef;
 use pr_craft_core::diff::{FileDiff, FileStatus};
 use pr_craft_core::review::LineRef;
+use pr_craft_core::svg::{SvgChange, SvgStructure};
 use pr_craft_core::view::{self, Cell, CellChange, CellKind, FileView, Mark, MdBlockView, MdItem, MdKind};
 use pr_craft_engine::view::{self as engine, Side};
 use pr_craft_forge::review::ChangeMeta;
 
+use crate::components;
 use crate::keymap;
 use crate::theme;
 
@@ -223,9 +225,12 @@ struct Compare {
 
 struct Vector {
     raster: Raster,
+    /// The viewBox's width and height when the root has one, else the drawing's size.
     width: f32,
     height: f32,
-    counts: BTreeMap<&'static str, usize>,
+    view_box: bool,
+    /// The size the drawing is shown at, in points.
+    shown: egui::Vec2,
     notes: Vec<String>,
 }
 
@@ -283,7 +288,7 @@ struct Doc {
 enum Loaded {
     Markdown(Doc),
     Images(Compare),
-    Svg { base: Version<Vector>, head: Version<Vector> },
+    Svg { base: Version<Vector>, head: Version<Vector>, markup: Result<SvgStructure, String> },
     Notebook(Notebook),
 }
 
@@ -297,7 +302,7 @@ impl Loaded {
                 let mags = if let Mags::Ready(m) = &c.mags { m.values.len() as u64 / 4 } else { 0 };
                 of(&c.base) + of(&c.head) + mags
             }
-            Loaded::Svg { base, head } => vector(base) + vector(head),
+            Loaded::Svg { base, head, .. } => vector(base) + vector(head),
             Loaded::Markdown(_) | Loaded::Notebook(_) => 0,
         }
     }
@@ -455,29 +460,41 @@ impl Views {
         }
     }
 
-    /// The blocks of a rendered Markdown file, once loaded.
-    fn blocks(&self, path: &str) -> Option<&[Entry]> {
-        match self.loaded(path) {
-            Some(Loaded::Markdown(doc)) => Some(&doc.entries),
+    /// Where J, K and C stop in a rendered file, by item: Markdown blocks or the rows of an SVG's markup, each with whether
+    /// the change touched it and the source line a comment on it posts to.
+    fn stops(&self, path: &str) -> Option<Vec<(bool, Option<LineRef>)>> {
+        match self.loaded(path)? {
+            Loaded::Markdown(doc) => Some(
+                doc.entries
+                    .iter()
+                    .map(|entry| match entry {
+                        Entry::Block(b) => (b.view.mark != Mark::Unchanged, b.view.anchor),
+                        Entry::Removed(..) | Entry::Omitted(..) => (false, None),
+                    })
+                    .collect(),
+            ),
+            Loaded::Svg { markup: Ok(markup), .. } => {
+                Some(markup.rows.iter().map(|row| (!matches!(row.change, SvgChange::Same(_)), row.anchor)).collect())
+            }
             _ => None,
         }
     }
 
-    /// Whether J and K walk blocks of this file now.
-    pub(crate) fn walks_blocks(&self, file: &FileDiff) -> bool {
-        self.current(file) == FileView::Rendered && self.blocks(&file.path).is_some()
+    /// Whether `path` loaded as an SVG, so its comments go in the band under its markup.
+    pub(crate) fn is_svg(&self, path: &str) -> bool {
+        matches!(self.loaded(path), Some(Loaded::Svg { .. }))
     }
 
-    /// Moves the block cursor to the next or previous changed block and focuses its comment button. False when there
-    /// is none that way, so the caller moves on to another file.
+    /// Whether J and K walk blocks or markup rows of this file now.
+    pub(crate) fn walks_blocks(&self, file: &FileDiff) -> bool {
+        matches!(self.current(file), FileView::Rendered | FileView::Structure) && self.stops(&file.path).is_some()
+    }
+
+    /// Moves the cursor to the next or previous changed block or row and focuses it. False when there is none that way, so
+    /// the caller moves on to another file.
     pub(crate) fn step_block(&mut self, path: &str, forward: bool) -> bool {
-        let Some(entries) = self.blocks(path) else { return false };
-        let changed: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| matches!(entry, Entry::Block(b) if b.view.mark != Mark::Unchanged))
-            .map(|(i, _)| i)
-            .collect();
+        let Some(stops) = self.stops(path) else { return false };
+        let changed: Vec<usize> = stops.iter().enumerate().filter(|(_, (changed, _))| *changed).map(|(i, _)| i).collect();
         let next = match (self.cursor.get(path).copied(), forward) {
             (None, true) => changed.first(),
             (None, false) => changed.last(),
@@ -490,27 +507,43 @@ impl Views {
         true
     }
 
-    /// The block `C` comments on: the cursor, else the first changed block, with the source line it posts to.
+    /// The item `C` comments on: the cursor, else the first changed one, with the source line it posts to.
     pub(crate) fn comment_target(&self, path: &str) -> Option<(usize, Option<LineRef>)> {
-        let entries = self.blocks(path)?;
-        let block = |i: usize| match entries.get(i) {
-            Some(Entry::Block(b)) => Some((i, b.view.anchor)),
-            _ => None,
-        };
-        let first_changed = entries.iter().position(|entry| matches!(entry, Entry::Block(b) if b.view.mark != Mark::Unchanged));
-        self.cursor.get(path).copied().or(first_changed).and_then(block)
+        let stops = self.stops(path)?;
+        let first_changed = stops.iter().position(|(changed, anchor)| *changed && anchor.is_some()).or_else(|| stops.iter().position(|(changed, _)| *changed));
+        let item = self.cursor.get(path).copied().or(first_changed)?;
+        stops.get(item).map(|(_, anchor)| (item, *anchor))
     }
 
-    /// The source line block `item` of `path` posts to, and what to call the block.
-    pub(crate) fn block_anchor(&self, path: &str, item: usize) -> Option<(Option<LineRef>, &'static str)> {
-        match self.blocks(path)?.get(item)? {
-            Entry::Block(b) => Some((b.view.anchor, kind_name(b.view.block.kind))),
-            Entry::Removed(..) | Entry::Omitted(..) => None,
+    /// The source line item `item` of `path` posts to, and what to call it: `paragraph`, `<path#arrow> d`.
+    pub(crate) fn block_anchor(&self, path: &str, item: usize) -> Option<(Option<LineRef>, String)> {
+        match self.loaded(path)? {
+            Loaded::Markdown(doc) => match doc.entries.get(item)? {
+                Entry::Block(b) => Some((b.view.anchor, kind_name(b.view.block.kind).to_string())),
+                Entry::Removed(..) | Entry::Omitted(..) => None,
+            },
+            Loaded::Svg { markup: Ok(markup), .. } => markup.rows.get(item).map(|row| (row.anchor, row_name(row))),
+            _ => None,
         }
     }
 
     pub(crate) fn set_cursor(&mut self, path: &str, item: usize) {
         self.cursor.insert(path.to_string(), item);
+    }
+
+    /// `file` as an SVG already read, with `old` and `new` as its two sides, for the tests.
+    #[cfg(test)]
+    pub(crate) fn preload_svg(&mut self, file: &FileDiff, old: &str, new: &str) {
+        let loaded = load_svg(Version::Shown(old.as_bytes().to_vec()), Version::Shown(new.as_bytes().to_vec()), file);
+        self.loads.insert(file.path.clone(), Slot::Ready(loaded));
+    }
+}
+
+/// `<path#arrow> d`, or the element alone when the row is about all of it.
+fn row_name(row: &pr_craft_core::svg::SvgRow) -> String {
+    match &row.attr {
+        Some(attr) => format!("{} {attr}", row.element),
+        None => row.element.clone(),
     }
 }
 
@@ -539,7 +572,7 @@ fn load(change: &ChangeRef, meta: &ChangeMeta, file: &FileDiff) -> Result<Loaded
         "ipynb" => load_notebook(change, meta, file),
         "svg" => {
             let (base, head) = fetch_both(change, meta, file);
-            Ok(Loaded::Svg { base: vector(base), head: vector(head) })
+            Ok(load_svg(base, head, file))
         }
         _ => {
             let (base, head) = fetch_both(change, meta, file);
@@ -553,6 +586,23 @@ fn load(change: &ChangeRef, meta: &ChangeMeta, file: &FileDiff) -> Result<Loaded
             };
             Ok(Loaded::Images(Compare { base, head, mags }))
         }
+    }
+}
+
+/// Both sides of an SVG, drawn, with what changed in its markup.
+fn load_svg(base: Version<Vec<u8>>, head: Version<Vec<u8>>, file: &FileDiff) -> Loaded {
+    let markup = svg_text(&base, "the old version")
+        .and_then(|old| Ok((old, svg_text(&head, "the new version")?)))
+        .and_then(|(old, new)| pr_craft_core::svg::structure(old, new, file));
+    Loaded::Svg { base: vector(base), head: vector(head), markup }
+}
+
+/// One side of an SVG as text for its markup rows; `None` when the change adds or deletes the file.
+fn svg_text<'a>(version: &'a Version<Vec<u8>>, what: &str) -> Result<Option<&'a str>, String> {
+    match version {
+        Version::Shown(bytes) => std::str::from_utf8(bytes).map(|t| Some(t.trim_start_matches('\u{feff}'))).map_err(|_| format!("{what} is not UTF-8 text")),
+        Version::Absent => Ok(None),
+        Version::Failed(error) => Err(format!("could not read {what}: {error}")),
     }
 }
 
@@ -695,29 +745,15 @@ fn draw_svg(bytes: &[u8]) -> Result<Vector, String> {
     if width <= 0.0 || height <= 0.0 {
         return Err("the SVG has no size".into());
     }
-    let scale = theme::SVG_RENDER / width.max(height);
-    let (px_w, px_h) = ((width * scale).ceil().max(1.0) as u32, (height * scale).ceil().max(1.0) as u32);
-    let pixmap = craft::svg::tree::draw::render(&tree, Transform::from_scale(scale, scale), px_w, px_h, 0, 256 << 20).map_err(|r| r.message)?;
+    let scale = theme::SVG_GROW.min(theme::SVG_ROOM_W / width).min(theme::SVG_ROOM_H / height);
+    let shown = egui::vec2(width * scale, height * scale);
+    // Twice the shown size, so edges stay sharp on a Retina screen.
+    let (px_w, px_h) = ((shown.x * 2.0).ceil().max(1.0) as u32, (shown.y * 2.0).ceil().max(1.0) as u32);
+    let pixmap = craft::svg::tree::draw::render(&tree, Transform::from_scale(scale * 2.0, scale * 2.0), px_w, px_h, 0, 256 << 20).map_err(|r| r.message)?;
     let image = ColorImage::from_rgba_premultiplied([px_w as usize, px_h as usize], pixmap.data());
-    let mut counts = BTreeMap::new();
-    count_nodes(tree.root(), &mut counts);
-    Ok(Vector { raster: Raster::new(bytes.len(), image), width, height, counts, notes })
-}
-
-fn count_nodes(group: &craft::svg::tree::usvg::Group, counts: &mut BTreeMap<&'static str, usize>) {
-    use craft::svg::tree::usvg::Node;
-    for node in group.children() {
-        let name = match node {
-            Node::Group(inner) => {
-                count_nodes(inner, counts);
-                "groups"
-            }
-            Node::Path(_) => "shapes",
-            Node::Image(_) => "embedded images",
-            Node::Text(_) => "text runs",
-        };
-        *counts.entry(name).or_default() += 1;
-    }
+    let view_box = pr_craft_core::svg::view_box_size(&source);
+    let (width, height) = view_box.unwrap_or((width, height));
+    Ok(Vector { raster: Raster::new(bytes.len(), image), width, height, view_box: view_box.is_some(), shown, notes })
 }
 
 // ---- drawing ----
@@ -732,8 +768,10 @@ pub(crate) fn show(
     width: f32,
     after_block: &mut dyn FnMut(&mut Ui, usize, &MdBlockView),
 ) -> Option<Pressed> {
-    let hint = format!("Rendered from the new version. {} shows the source diff of {}.", keymap::label(ui, "review.toggle_source"), file.path);
-    ui.label(RichText::new(hint).size(theme::sz(ui).body).color(theme::pal(ui).text_tertiary));
+    if view::extension(&file.path) != "svg" {
+        let hint = format!("Rendered from the new version. {} shows the source diff of {}.", keymap::label(ui, "review.toggle_source"), file.path);
+        ui.label(RichText::new(hint).size(theme::sz(ui).body).color(theme::pal(ui).text_tertiary));
+    }
     let path = file.path.as_str();
     let focus = views.focus_cursor.as_deref() == Some(path);
     if focus {
@@ -761,7 +799,10 @@ pub(crate) fn show(
     match loaded {
         Loaded::Markdown(doc) => return markdown(ui, doc, cursor, focus, after_block),
         Loaded::Images(compare) => images(ui, compare, pair, view, width, &views.pool),
-        Loaded::Svg { base, head } => svg(ui, base, head, width),
+        Loaded::Svg { base, head, markup } => {
+            let next = format!("{} {}", view::toggled(path, view).label(), keymap::label(ui, "review.toggle_source"));
+            return svg(ui, Svg { base, head, markup, view, width, cursor, focus, next: &next });
+        }
         Loaded::Notebook(notebook) => notebook_ui(ui, notebook, path, &mut views.unchanged_shown),
     }
     None
@@ -1324,71 +1365,112 @@ fn difference_ui(ui: &mut Ui, mags: &Arc<Magnitudes>, state: &mut PairUi, width:
 
 // ---- SVG ----
 
-fn svg(ui: &mut Ui, base: &mut Version<Vector>, head: &mut Version<Vector>, width: f32) {
-    no_pins(ui, "an SVG");
-    let each = ((width - theme::SPACE_3 * 3.0) / 2.0).max(theme::SMALL_IMAGE);
-    ui.horizontal_top(|ui| {
-        for (name, version, absent) in
-            [("Before", &mut *base, "Before: no file; this change adds it."), ("After", &mut *head, "After: no file; this change deletes it.")]
-        {
-            ui.vertical(|ui| {
-                ui.set_max_width(each);
-                match version {
-                    Version::Shown(vector) => svg_side(ui, name, vector),
-                    Version::Absent => note(ui, absent),
-                    Version::Failed(error) => crate::live_label(ui, format!("Could not draw {name}: {error}"), theme::pal(ui).rose_text),
-                }
+struct Svg<'a> {
+    base: &'a mut Version<Vector>,
+    head: &'a mut Version<Vector>,
+    markup: &'a Result<SvgStructure, String>,
+    view: FileView,
+    width: f32,
+    cursor: Option<usize>,
+    focus: bool,
+    /// The view the view key goes to next, with the key: `Structure ⇧S`.
+    next: &'a str,
+}
+
+/// Frame 79: Before and After drawn side by side (in the Rendered view), then what changed in the markup, one row per change.
+fn svg(ui: &mut Ui, shown: Svg<'_>) -> Option<Pressed> {
+    let width = shown.width;
+    if shown.view == FileView::Rendered {
+        ui.add_space(20.0);
+        let pair = theme::SVG_BOX_W * 2.0 + 24.0;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(24.0, 24.0);
+            ui.add_space(((width - pair) / 2.0).max(24.0));
+            svg_side(ui, "Before", theme::pal(ui).rose, shown.base, "No file before this change.");
+            svg_side(ui, "After", theme::pal(ui).moss, shown.head, "This change deletes the file.");
+        });
+        let notes: Vec<String> = [("Before", &*shown.base), ("After", &*shown.head)]
+            .into_iter()
+            .filter_map(|(name, version)| match version {
+                Version::Shown(vector) if !vector.notes.is_empty() => Some(format!("{name}: {}.", vector.notes.join(", "))),
+                _ => None,
+            })
+            .collect();
+        for text in notes {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                note(ui, text);
             });
         }
-    });
-    ui.add_space(theme::SPACE_2);
-    structure(ui, base, head);
-}
-
-fn svg_side(ui: &mut Ui, name: &str, vector: &mut Vector) {
-    let caption =
-        format!("{name}  ·  {}  ·  {} × {} · shown at {:.0} px", size_text(vector.raster.bytes), vector.width, vector.height, theme::SVG_SHOWN);
-    ui.label(RichText::new(caption).size(theme::sz(ui).body).color(theme::pal(ui).text_secondary));
-    let (w, h) = (vector.raster.width as f32, vector.raster.height as f32);
-    let scale = theme::SVG_SHOWN / w.max(h);
-    if let Some(texture) = vector.raster.texture(ui.ctx(), name) {
-        let alt = format!("{name}: SVG drawn at {:.0} px", theme::SVG_SHOWN);
-        ui.add(egui::Image::new(egui::load::SizedTexture::new(texture.id(), egui::vec2(w * scale, h * scale))).alt_text(alt));
+        ui.add_space(20.0);
     }
-    for note_text in &vector.notes {
-        note(ui, note_text.clone());
-    }
-}
-
-/// How many of each kind of node the parsed tree holds, before and after. Attributes and text are not compared.
-fn structure(ui: &mut Ui, base: &Version<Vector>, head: &Version<Vector>) {
-    ui.label(RichText::new("Node counts (parsed tree)").size(theme::sz(ui).body).color(theme::pal(ui).graphite));
-    note(ui, format!("Attribute and text changes are not compared; press {} for the source diff.", keymap::label(ui, "review.toggle_source")));
-    let empty = BTreeMap::new();
-    let (before, after) = (counts_of(base, &empty), counts_of(head, &empty));
-    let kinds: BTreeSet<&'static str> = before.keys().chain(after.keys()).copied().collect();
-    if kinds.is_empty() {
-        note(ui, "Neither version draws anything.");
-        return;
-    }
-    egui::Grid::new("svg-structure").num_columns(4).spacing([theme::SPACE_3, 2.0]).show(ui, |ui| {
-        for kind in kinds {
-            let (a, b) = (before.get(&kind).copied().unwrap_or(0), after.get(&kind).copied().unwrap_or(0));
-            let (ink, size) = (theme::pal(ui).graphite, theme::sz(ui).body);
-            let text = |s: String| RichText::new(s).size(size).color(ink);
-            ui.label(text(kind.to_string()));
-            ui.label(text(a.to_string()));
-            ui.label(text(format!("→ {b}")));
-            ui.label(text(if a == b { "same count".into() } else { "count changed".into() }));
-            ui.end_row();
+    components::svg_markup_head(ui, width, shown.next);
+    let rows = match shown.markup {
+        Ok(markup) => markup,
+        Err(error) => {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                crate::live_label(ui, format!("Could not compare the markup: {error}."), theme::pal(ui).rose_text);
+            });
+            return None;
         }
-    });
+    };
+    if rows.rows.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            note(ui, "No element, attribute or text changed.");
+        });
+    }
+    let mut pressed = None;
+    for (i, row) in rows.rows.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(2.0);
+        }
+        let value = match &row.change {
+            SvgChange::Same(text) => components::MarkupValue::Same(text),
+            SvgChange::Changed { old, new } => components::MarkupValue::Changed(old, new),
+            SvgChange::Added(text) => components::MarkupValue::Added(text),
+            SvgChange::Removed(text) => components::MarkupValue::Removed(text),
+        };
+        let selected = shown.cursor == Some(i);
+        let response = components::svg_markup_row(ui, width, &row_name(row), &value, selected);
+        if selected && shown.focus {
+            response.request_focus();
+            response.scroll_to_me(Some(egui::Align::Center));
+        }
+        if response.clicked() {
+            pressed = Some(Pressed::Select(i));
+        }
+    }
+    if rows.left_out > 0 {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            note(ui, format!("{} more changes are not listed; the source diff has them all.", rows.left_out));
+        });
+    }
+    pressed
 }
 
-fn counts_of<'a>(version: &'a Version<Vector>, empty: &'a BTreeMap<&'static str, usize>) -> &'a BTreeMap<&'static str, usize> {
+fn svg_side(ui: &mut Ui, name: &str, dot: Color32, version: &mut Version<Vector>, absent: &str) {
     match version {
-        Version::Shown(vector) => &vector.counts,
-        _ => empty,
+        Version::Shown(vector) => {
+            let size = size_text(vector.raster.bytes);
+            let unit = if vector.view_box { "viewBox" } else { "px" };
+            let caption = format!("{} × {} {unit} · shown at {:.0} px", vector.width, vector.height, vector.shown.x.max(vector.shown.y));
+            let drawn = vector.shown;
+            let picture = match vector.raster.texture(ui.ctx(), name) {
+                Some(texture) => components::SvgPicture::Drawn { texture: texture.id(), size: drawn },
+                None => components::SvgPicture::Note("Not drawn yet."),
+            };
+            components::svg_side(ui, name, dot, &size, picture, &caption);
+        }
+        Version::Absent => {
+            components::svg_side(ui, name, dot, "", components::SvgPicture::Note(absent), "");
+        }
+        Version::Failed(error) => {
+            let said = format!("Could not draw it: {error}");
+            components::svg_side(ui, name, dot, "", components::SvgPicture::Note(&said), "");
+        }
     }
 }
 
@@ -1536,11 +1618,13 @@ mod tests {
     }
 
     #[test]
-    fn an_svg_is_drawn_counted_and_its_unsupported_parts_named() {
+    fn an_svg_is_drawn_fitted_to_its_box_and_its_unsupported_parts_named() {
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="12" viewBox="0 0 24 12"><script>1</script><g><path d="M0 0h10v10z"/></g><rect width="4" height="4"/></svg>"#;
         let vector = render_svg(svg).expect("a valid SVG draws");
         assert_eq!((vector.width, vector.height), (24.0, 12.0));
-        assert!(vector.counts.get("shapes").copied().unwrap_or(0) >= 2, "{:?}", vector.counts);
+        assert!(vector.shown.x > vector.width && vector.shown.x <= theme::SVG_ROOM_W, "an icon grows to be seen: {:?}", vector.shown);
+        let big = render_svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1000"><rect width="5" height="5"/></svg>"#).expect("draws");
+        assert!(big.shown.x <= theme::SVG_ROOM_W && big.shown.y <= theme::SVG_ROOM_H && !big.view_box, "{:?}", big.shown);
         assert!(vector.notes.iter().any(|n| n.contains("script")), "{:?}", vector.notes);
         assert!(render_svg(b"<svg").is_err());
     }
