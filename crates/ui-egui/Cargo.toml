@@ -1,0 +1,28 @@
+[package]
+name = "pr-craft-ui-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "PR Craft egui UI, hosted by the craft-ui runtime"
+
+[lints]
+workspace = true
+
+[dependencies]
+pr-craft-forge = { workspace = true }
+pr-craft-engine = { workspace = true }
+pr-craft-share-render = { workspace = true }
+craft = { workspace = true, features = ["ui-app", "markdown", "flow", "image-codecs", "svg-tree-render", "font-catalog"] }
+pr-craft-core = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# Offscreen screenshot tests of the inbox and review screens (wgpu software or Metal adapter); off by default so CI needs no GPU.
+renders = []
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu"] }

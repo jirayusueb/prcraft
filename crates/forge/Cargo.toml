@@ -1,0 +1,17 @@
+[package]
+name = "pr-craft-forge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Reads the gh and glab CLIs whose logins PR Craft reuses"
+
+[lints]
+workspace = true
+
+[dependencies]
+pr-craft-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "pr-craft-share-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Rasterises a share image's SVG to a PNG"
+
+[lints]
+workspace = true
+
+[dependencies]
+pr-craft-core = { workspace = true }
+craft = { workspace = true, features = ["svg-tree-render-system-fonts", "image-codecs"] }

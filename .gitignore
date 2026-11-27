@@ -1,0 +1,10 @@
+*~
+plan/
+/target
+/dist
+.DS_Store
+/.claude/
+/target-*/
+/.egm/
+/.impeccable/
+/.omp/

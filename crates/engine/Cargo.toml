@@ -1,0 +1,18 @@
+[package]
+name = "pr-craft-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Commands: the one way the UI, the CLI and automation act"
+
+[lints]
+workspace = true
+
+[dependencies]
+pr-craft-core = { workspace = true }
+pr-craft-forge = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

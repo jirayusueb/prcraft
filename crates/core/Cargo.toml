@@ -1,0 +1,16 @@
+[package]
+name = "pr-craft-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Forge words shared by every layer; no I/O"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
