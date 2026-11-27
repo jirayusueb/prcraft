@@ -47,6 +47,9 @@ pub struct NewDraft {
     pub body: String,
     /// [`ReviewView::anchor`] of the diff the line numbers come from.
     pub anchor: Anchor,
+    /// Written on the rendered view of an SVG; the draft says so and still posts on `end`.
+    #[serde(default)]
+    pub on_rendered: bool,
 }
 
 /// `review.open`: fetches the change and its diff, both at once. Blocks on the CLI.
@@ -187,7 +190,7 @@ pub(crate) fn draft_add_in(dir: &Path, change: &ChangeRef, new: NewDraft) -> Res
         }
         let id = local.next_id;
         local.next_id += 1;
-        local.drafts.push(Draft { id, path: new.path, old_path: new.old_path, start: new.start, end: new.end, body });
+        local.drafts.push(Draft { id, path: new.path, old_path: new.old_path, start: new.start, end: new.end, body, on_rendered: new.on_rendered });
         Ok(())
     })
 }

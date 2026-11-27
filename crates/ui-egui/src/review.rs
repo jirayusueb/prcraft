@@ -332,6 +332,17 @@ impl ReviewScreen {
         self
     }
 
+    /// The same review with `path` already read as an SVG, `old` before and `new` after, for the tests.
+    #[cfg(test)]
+    pub(crate) fn with_svg(mut self, path: &str, old: &str, new: &str) -> Self {
+        if let State::Ready(ready) = &mut self.state
+            && let Some(file) = ready.view.files.iter().find(|f| f.path == path)
+        {
+            ready.views.preload_svg(file, old, new);
+        }
+        self
+    }
+
     /// The same review with no draft on this Mac, for the tests.
     #[cfg(test)]
     pub(crate) fn with_no_drafts(mut self) -> Self {
@@ -505,6 +516,8 @@ enum Act {
     SaveComposer,
     CancelComposer,
     StartEdit(u64),
+    /// `E`: edit the draft `[` `]` last moved to, else the first draft of the current file.
+    EditHere,
     SaveEdit,
     CancelEdit,
     DeleteDraft(u64),
@@ -1196,6 +1209,7 @@ impl Ready {
             ("review.next_draft", Act::StepDraft { forward: true }),
             ("review.prev_draft", Act::StepDraft { forward: false }),
             ("review.comment", Act::OpenComposer),
+            ("review.edit_draft", Act::EditHere),
         ] {
             if pressed(id) {
                 acts.push(act);
@@ -1474,15 +1488,18 @@ impl Ready {
         let file = &self.view.files[i];
         let viewed = self.viewed(file);
         let p = theme::pal(ui);
+        // Frame 79 (and every file header of the review frames): the path and its counts, then the views, a divider, Viewed and its key.
         let header = egui::Frame::new()
             .fill(p.sunken)
-            .inner_margin(Margin::symmetric(16, 6))
+            .inner_margin(Margin::symmetric(16, 0))
             .show(ui, |ui| {
-                ui.set_width(width - 32.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
+                // The controls take their room first; the path is cut to what is left, so they never draw over it.
+                ui.allocate_ui_with_layout(egui::vec2(width - 32.0, 34.0), Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.spacing_mut().icon_spacing = 6.0;
+                    components::key_cap(ui, &keymap::label(ui, "review.viewed"));
                     let mut checked = viewed;
-                    let check = ui.add(egui::Checkbox::new(&mut checked, RichText::new("Viewed").size(theme::sz(ui).body).color(p.graphite)));
+                    let check = ui.add(egui::Checkbox::new(&mut checked, RichText::new("Viewed").size(12.0 * theme::sz(ui).body / 13.5).color(p.graphite)));
                     if check.changed() {
                         acts.push(Act::ToggleViewed(i));
                     }
@@ -1490,16 +1507,26 @@ impl Ready {
                         check.request_focus();
                         check.scroll_to_me(Some(Align::TOP));
                     }
-                    let renamed = file.old_path.as_deref().map(|old| format!("{old} → ")).unwrap_or_default();
-                    components::mono_label(ui, format!("{renamed}{}", file.path), 12.0, p.graphite);
-                    components::mono_label(ui, format!("+{} −{}", file.additions, file.deletions), 11.5, p.text_secondary);
+                    if views::offered(file).len() > 1 {
+                        let (divider, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
+                        ui.painter().rect_filled(divider, 0.0, p.border);
+                        self.view_switcher(ui, i, file, acts);
+                    }
+                    ui.add_space(12.0);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let counts = (format!("+{}", file.additions), format!("−{}", file.deletions));
+                        let room = ui.available_width() - 20.0 - components::mono_width(ui, &counts.0, 11.5) - components::mono_width(ui, &counts.1, 11.5);
+                        let renamed = file.old_path.as_deref().map(|old| format!("{old} → ")).unwrap_or_default();
+                        components::mono_label_cut(ui, format!("{renamed}{}", file.path), 12.5, p.graphite, room);
+                        components::mono_label(ui, counts.0, 11.5, p.moss_text);
+                        components::mono_label(ui, counts.1, 11.5, p.rose_text);
+                    });
                 });
             })
             .response
             .rect;
         components::seam_bottom(ui, header);
-        ui.add_space(4.0);
-        self.view_switcher(ui, i, file, acts);
         let view = self.views.current(file);
         if view != FileView::Source && self.rendered_visible(file, viewed) {
             // A file loads when its header is near the window; the one the reader is on always does.
@@ -1622,24 +1649,17 @@ impl Ready {
         }
     }
 
-    /// The tabs of the views `file` offers (frames 25, 26, 79), with the key that toggles them.
+    /// The views `file` offers, in its header (frames 25, 26, 79); the Keys panel names the key that steps through them.
     fn view_switcher(&self, ui: &mut Ui, i: usize, file: &FileDiff, acts: &mut Vec<Act>) {
         let offered = views::offered(file);
-        if offered.len() < 2 {
-            return;
-        }
         let current = self.views.current(file);
         let labels: Vec<String> = offered.iter().map(|view| view.label().to_string()).collect();
         let at = offered.iter().position(|&view| view == current).unwrap_or(0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            if let Some(picked) = components::segmented(ui, &format!("views-{i}"), "File view", &labels, at)
-                && let Some(&view) = offered.get(picked)
-            {
-                acts.push(Act::SetView(i, view));
-            }
-            components::label(ui, format!("{} rendered or source", keymap::label(ui, "review.toggle_source")), 12.0, theme::pal(ui).text_tertiary);
-        });
+        if let Some(picked) = components::segmented(ui, &format!("views-{i}"), "File view", &labels, at)
+            && let Some(&view) = offered.get(picked)
+        {
+            acts.push(Act::SetView(i, view));
+        }
     }
 
     /// A rendered view draws unless the reader folded the file (viewed, generated or large) and has not unfolded it.
@@ -1673,14 +1693,14 @@ impl Ready {
                 let focus = std::mem::take(&mut self.focus_composer);
                 let title =
                     format!("Comment on this {} · it posts on line {} of the source", views::kind_name(block.block.kind), target.line.shown());
-                composer_ui(ui, width, &mut self.composer, focus, title, acts);
+                composer_ui(ui, Place::Line(width), &mut self.composer, focus, title, acts);
             }
             let Some(anchor) = block.anchor else { return };
             // Line numbers of stale drafts belong to another commit, so they are not placed in this file.
             for draft in drafts.iter().filter(|d| !stale && d.path == file.path && d.end == anchor) {
                 self.inline.insert(draft.id);
                 let focus = self.focus_draft && self.draft_focus == Some(draft.id);
-                draft_card(ui, Some(width), draft, &mut self.editing, focus, acts);
+                draft_card(ui, Place::Line(width), draft, &mut self.editing, focus, acts);
             }
         };
         match views::show(ui, &mut self.views, file, view, width, &mut after) {
@@ -1692,16 +1712,38 @@ impl Ready {
             }
             None => {}
         }
+        if self.views.is_svg(&file.path) {
+            self.svg_band(ui, i, width, acts);
+        }
     }
 
-    /// `C` in rendered Markdown: comment on the block the cursor is on, else the first changed one.
+    /// Frame 79: under an SVG's markup, the comment being written on it and its drafts, each card on its own.
+    fn svg_band(&mut self, ui: &mut Ui, i: usize, width: f32, acts: &mut Vec<Act>) {
+        let file = &self.view.files[i];
+        if let Some(target) = self.block.filter(|t| t.file == i)
+            && self.composer.is_some()
+        {
+            let focus = std::mem::take(&mut self.focus_composer);
+            let what = self.views.block_anchor(&file.path, target.item).map(|(_, name)| name).unwrap_or_else(|| "the rendered view".into());
+            let title = format!("Comment on {what} · it posts on line {} of the source", target.line.shown());
+            composer_ui(ui, Place::Band(width), &mut self.composer, focus, title, acts);
+        }
+        // Line numbers of stale drafts belong to another commit, so they are not placed in this file.
+        for draft in self.view.local.drafts.iter().filter(|d| !self.view.stale && d.path == file.path) {
+            self.inline.insert(draft.id);
+            let focus = self.focus_draft && self.draft_focus == Some(draft.id);
+            draft_card(ui, Place::Band(width), draft, &mut self.editing, focus, acts);
+        }
+    }
+
+    /// `C` in rendered Markdown or an SVG: comment on the block or markup row the cursor is on, else the first changed one.
     fn comment_on_cursor_block(&mut self, ctx: &Context) {
         let target = self.view.files.get(self.file).and_then(|f| self.views.comment_target(&f.path));
         match target {
             Some((item, _)) => self.open_block_composer(ctx, self.file, item),
             None => {
                 self.notice =
-                    Some(format!("This file has no changed block to comment on. Click a block, then press {}.", keymap::label(ctx, "review.comment")))
+                    Some(format!("This file has no changed block or markup row to comment on. Click one, then press {}.", keymap::label(ctx, "review.comment")))
             }
         }
     }
@@ -1723,7 +1765,7 @@ impl Ready {
             }
             _ => {
                 self.notice = Some(format!(
-                    "The forge takes comments only on lines the diff shows, and this block has none. Press {} to see the source.",
+                    "The forge takes comments only on lines the diff shows, and this has none. Press {} to see the source.",
                     keymap::label(ctx, "review.toggle_source")
                 ));
             }
@@ -1863,7 +1905,7 @@ impl Ready {
                 acts.push(Act::StartEdit(draft.id));
             }
             if !self.inline.contains(&draft.id) && editing {
-                draft_card(ui, None, draft, &mut self.editing, focus, acts);
+                draft_card(ui, Place::Panel, draft, &mut self.editing, focus, acts);
             }
         }
         ui.spacing_mut().item_spacing.y = 3.0;
@@ -2469,6 +2511,23 @@ impl Ready {
                     self.focus_draft = true;
                     Ok(())
                 }
+                Act::EditHere => {
+                    let here = self.view.files.get(self.file).map(|f| f.path.as_str());
+                    let drafts = &self.view.local.drafts;
+                    let id = self
+                        .draft_focus
+                        .filter(|id| drafts.iter().any(|d| d.id == *id && Some(d.path.as_str()) == here))
+                        .or_else(|| drafts.iter().find(|d| Some(d.path.as_str()) == here).map(|d| d.id));
+                    match id.and_then(|id| drafts.iter().find(|d| d.id == id)) {
+                        Some(draft) => {
+                            self.editing = Some((draft.id, draft.body.clone()));
+                            self.draft_focus = Some(draft.id);
+                            self.focus_draft = true;
+                        }
+                        None => self.notice = Some(format!("No draft here to edit. Press {} to go to the next draft.", keymap::label(ctx, "review.next_draft"))),
+                    }
+                    Ok(())
+                }
                 Act::SaveEdit => match self.editing.take() {
                     Some((id, body)) => engine::draft_edit(&self.view.change, id, body).map(|local| self.set_local(local)),
                     None => Ok(()),
@@ -2571,6 +2630,7 @@ impl Ready {
             end: target.line,
             body,
             anchor: self.view.anchor.clone(),
+            on_rendered: self.views.is_svg(&file.path),
         };
         let local = engine::draft_add(&self.view.change, new)?;
         self.set_local(local);
@@ -2597,6 +2657,7 @@ impl Ready {
             end,
             body,
             anchor: self.view.anchor.clone(),
+            on_rendered: false,
         };
         let local = engine::draft_add(&self.view.change, new)?;
         self.set_local(local);
@@ -3406,7 +3467,7 @@ impl UnderRow<'_> {
         for draft in drafts.iter().filter(|d| d.path == self.file.path && lines.iter().any(|(_, line)| d.end.on(line))) {
             self.inline.insert(draft.id);
             let focus = self.focus_draft == Some(draft.id);
-            draft_card(ui, Some(self.width), draft, self.editing, focus, acts);
+            draft_card(ui, Place::Line(self.width), draft, self.editing, focus, acts);
         }
         // AI drafts read at this commit sit under their line, never posted until kept and submitted.
         let on_row = |p: &&ai::Pending| {
@@ -3432,7 +3493,7 @@ impl UnderRow<'_> {
             title.push_str(&format!(". GitLab pins it to line {}; the range goes in the text.", shown(hi)));
         }
         let focus = std::mem::take(self.focus_composer);
-        composer_ui(ui, self.width, self.composer, focus, title, acts);
+        composer_ui(ui, Place::Line(self.width), self.composer, focus, title, acts);
     }
 }
 
@@ -3958,13 +4019,36 @@ fn ai_card(ui: &mut Ui, inline: Option<f32>, draft: &AiDraft, place: Option<Stri
     }
 }
 
-/// Where a draft sits, for the Your review list: `invoicer.go:42`, or "General" when it has no line to show.
+/// Where a draft sits, for the Your review list: `invoicer.go:42`, `retry.svg · rendered` for one written on a rendered SVG,
+/// or "General" when it has no line to show.
 fn draft_place(draft: &Draft) -> String {
-    if draft.end.shown() == 0 { "General".to_string() } else { draft.location() }
+    if draft.on_rendered {
+        format!("{} · rendered", draft.path.rsplit('/').next().unwrap_or(&draft.path))
+    } else if draft.end.shown() == 0 {
+        "General".to_string()
+    } else {
+        draft.location()
+    }
 }
 
-/// A draft under its line or in Your review: its text, or its editor, with Edit and Delete.
-fn draft_card(ui: &mut Ui, inline: Option<f32>, draft: &Draft, editing: &mut Option<(u64, String)>, focus: bool, acts: &mut Vec<Act>) {
+/// Where a draft or the comment box is drawn.
+#[derive(Clone, Copy)]
+enum Place {
+    /// Between two lines of the diff, `width` wide.
+    Line(f32),
+    /// On its own under a rendered SVG (frame 79), `width` wide.
+    Band(f32),
+    /// In Your review.
+    Panel,
+}
+
+fn draft_tag(draft: &Draft) -> &'static str {
+    if draft.on_rendered { "Draft · on the rendered view" } else { "Draft · on this Mac" }
+}
+
+/// A draft under its line, under a rendered SVG or in Your review: its text, or its editor, with Edit and Delete. Under an SVG
+/// it has the quiet Edit of frame 79 with its key; Delete is in the editor.
+fn draft_card(ui: &mut Ui, place: Place, draft: &Draft, editing: &mut Option<(u64, String)>, focus: bool, acts: &mut Vec<Act>) {
     let mut body = |ui: &mut Ui| match editing {
         Some((id, text)) if *id == draft.id => {
             let field = ui.add(TextEdit::multiline(text).desired_width(ui.available_width()));
@@ -3991,7 +4075,10 @@ fn draft_card(ui: &mut Ui, inline: Option<f32>, draft: &Draft, editing: &mut Opt
             components::body_text(ui, &draft.body);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                let edit = Pill::new(PillKind::Secondary, "Edit").small().show(ui);
+                let edit = match place {
+                    Place::Band(_) => Pill::new(PillKind::Quiet, "Edit").key(ui, "review.edit_draft").small().show(ui),
+                    Place::Line(_) | Place::Panel => Pill::new(PillKind::Secondary, "Edit").small().show(ui),
+                };
                 if focus {
                     edit.request_focus();
                     edit.scroll_to_me(Some(Align::Center));
@@ -3999,23 +4086,23 @@ fn draft_card(ui: &mut Ui, inline: Option<f32>, draft: &Draft, editing: &mut Opt
                 if edit.clicked() {
                     acts.push(Act::StartEdit(draft.id));
                 }
-                if Pill::new(PillKind::Danger, "Delete draft").small().show(ui).clicked() {
+                if !matches!(place, Place::Band(_)) && Pill::new(PillKind::Danger, "Delete draft").small().show(ui).clicked() {
                     acts.push(Act::DeleteDraft(draft.id));
                 }
             });
         }
     };
-    if let Some(width) = inline {
-        components::comment_card(ui, width, CardKind::Draft, "You", "Draft · on this Mac", body);
-    } else {
-        card(ui, |ui| {
+    match place {
+        Place::Line(width) => components::comment_card(ui, width, CardKind::Draft, "You", draft_tag(draft), body),
+        Place::Band(width) => components::loose_comment_card(ui, width, CardKind::Draft, "You", draft_tag(draft), body),
+        Place::Panel => card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 components::label(ui, "You", 13.0, theme::pal(ui).graphite);
-                components::tag(ui, TagKind::OnTheWay, "Draft · on this Mac");
+                components::tag(ui, TagKind::OnTheWay, draft_tag(draft));
             });
-            components::mono_label(ui, draft.location(), 11.0, theme::pal(ui).text_tertiary);
+            components::mono_label(ui, draft_place(draft), 11.0, theme::pal(ui).text_tertiary);
             body(ui);
-        });
+        }),
     }
 }
 
@@ -4023,10 +4110,10 @@ pub(crate) fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     components::card_frame(ui).show(ui, add);
 }
 
-/// The comment box under the selected lines (frame 05).
-fn composer_ui(ui: &mut Ui, width: f32, composer: &mut Option<String>, focus: bool, title: String, acts: &mut Vec<Act>) {
+/// The comment box under the selected lines (frame 05), or under a rendered SVG.
+fn composer_ui(ui: &mut Ui, place: Place, composer: &mut Option<String>, focus: bool, title: String, acts: &mut Vec<Act>) {
     let Some(body) = composer else { return };
-    components::comment_card(ui, width, CardKind::Draft, "You", "Draft · on this Mac", |ui| {
+    let add = |ui: &mut Ui| {
         components::label(ui, title, 13.0, theme::pal(ui).graphite);
         let field = ui.add(TextEdit::multiline(body).desired_width(f32::INFINITY).hint_text("Draft · on this Mac until you submit"));
         if focus {
@@ -4041,7 +4128,12 @@ fn composer_ui(ui: &mut Ui, width: f32, composer: &mut Option<String>, focus: bo
                 acts.push(Act::CancelComposer);
             }
         });
-    });
+    };
+    match place {
+        Place::Band(width) => components::loose_comment_card(ui, width, CardKind::Draft, "You", "Draft · on the rendered view", add),
+        Place::Line(width) => components::comment_card(ui, width, CardKind::Draft, "You", "Draft · on this Mac", add),
+        Place::Panel => card(ui, add),
+    }
 }
 
 #[cfg(test)]

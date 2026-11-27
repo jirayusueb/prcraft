@@ -15,6 +15,8 @@ use crate::review::LineRef;
 pub enum FileView {
     Source,
     Rendered,
+    /// What changed in an SVG's markup, element by element.
+    Structure,
     ImageTwoUp,
     ImageSwipe,
     ImageOnion,
@@ -28,6 +30,7 @@ impl FileView {
         match self {
             FileView::Source => "Source",
             FileView::Rendered => "Rendered",
+            FileView::Structure => "Structure",
             FileView::ImageTwoUp => "2-up",
             FileView::ImageSwipe => "Swipe",
             FileView::ImageOnion => "Onion",
@@ -45,9 +48,10 @@ pub fn extension(path: &str) -> String {
 
 /// The views `path` offers, the default first. Source is always last.
 pub fn views_for(path: &str) -> &'static [FileView] {
-    use FileView::{ImageDifference, ImageOnion, ImageSwipe, ImageTwoUp, Notebook, Rendered, Source};
+    use FileView::{ImageDifference, ImageOnion, ImageSwipe, ImageTwoUp, Notebook, Rendered, Source, Structure};
     match extension(path).as_str() {
-        "md" | "markdown" | "svg" => &[Rendered, Source],
+        "md" | "markdown" => &[Rendered, Source],
+        "svg" => &[Rendered, Structure, Source],
         "png" | "jpg" | "jpeg" | "gif" | "webp" => &[ImageTwoUp, ImageSwipe, ImageOnion, ImageDifference, Source],
         "ipynb" => &[Notebook, Source],
         _ => &[Source],
@@ -60,9 +64,14 @@ pub fn default_view(path: &str, remembered: Option<FileView>) -> FileView {
     remembered.filter(|view| offered.contains(view)).or_else(|| offered.first().copied()).unwrap_or(FileView::Source)
 }
 
-/// What the rendered/source key switches to from `current`.
+/// What the rendered/source key switches to from `current`: an SVG steps Rendered, Structure, Source; others toggle.
 pub fn toggled(path: &str, current: FileView) -> FileView {
-    if current == FileView::Source { views_for(path).first().copied().unwrap_or(FileView::Source) } else { FileView::Source }
+    let offered = views_for(path);
+    match current {
+        FileView::Source => offered.first().copied().unwrap_or(FileView::Source),
+        FileView::Rendered if offered.contains(&FileView::Structure) => FileView::Structure,
+        _ => FileView::Source,
+    }
 }
 
 /// What one Markdown block is, as far as laying it out goes.
@@ -641,6 +650,8 @@ mod tests {
         assert_eq!(toggled("a.md", FileView::Rendered), FileView::Source);
         assert_eq!(toggled("a.md", FileView::Source), FileView::Rendered);
         assert_eq!(toggled("lib.rs", FileView::Source), FileView::Source);
+        let svg = [FileView::Rendered, FileView::Structure, FileView::Source, FileView::Rendered];
+        assert!(svg.windows(2).all(|w| toggled("icon.svg", w[0]) == w[1]), "an SVG steps through its three views");
     }
 
     const DOC: &str = "# Webhooks\n\nPR Craft sends a POST.\nEach delivery is signed.\n\n## Retries\n\n- one\n- two\n  wrapped\n\n```yaml\na: 1\n\nb: 2\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n> quoted\n\n---\n";

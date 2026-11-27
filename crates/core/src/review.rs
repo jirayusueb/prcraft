@@ -39,6 +39,9 @@ pub struct Draft {
     pub start: Option<LineRef>,
     pub end: LineRef,
     pub body: String,
+    /// Written on the rendered view of a file whose view has no lines of its own (an SVG); it still posts on `end`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_rendered: bool,
 }
 
 impl Draft {
@@ -135,8 +138,8 @@ mod tests {
         let line = |n| LineRef { old: None, new: Some(n) };
         let review = LocalReview {
             drafts: vec![
-                Draft { id: 0, path: "billing/invoicer.go".into(), old_path: None, start: Some(line(42)), end: line(44), body: "Lock first.".into() },
-                Draft { id: 1, path: "db/0087.sql".into(), old_path: None, start: None, end: line(3), body: "Add a note.".into() },
+                Draft { id: 0, path: "billing/invoicer.go".into(), old_path: None, start: Some(line(42)), end: line(44), body: "Lock first.".into(), on_rendered: false },
+                Draft { id: 1, path: "db/0087.sql".into(), old_path: None, start: None, end: line(3), body: "Add a note.".into(), on_rendered: false },
             ],
             verdict: Verdict::RequestChanges,
             body: "Two things.".into(),

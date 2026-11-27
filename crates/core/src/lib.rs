@@ -18,6 +18,7 @@ pub mod run;
 pub mod settings;
 pub mod share;
 pub mod stack;
+pub mod svg;
 pub mod thread;
 pub mod turn;
 pub mod view;

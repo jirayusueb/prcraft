@@ -214,7 +214,7 @@ impl ReviewFacts {
         match id {
             "review.submit" => self.can_submit,
             "review.close_run" => self.run_detail_open,
-            "review.next_draft" | "review.prev_draft" => self.drafts && !self.readonly,
+            "review.next_draft" | "review.prev_draft" | "review.edit_draft" => self.drafts && !self.readonly,
             "review.toggle_source" => self.file_offers_views && !self.readonly,
             "review.image_two_up" | "review.image_swipe" | "review.image_onion" | "review.image_difference" => {
                 self.file_offers_images && !self.readonly
