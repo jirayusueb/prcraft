@@ -10,6 +10,7 @@ pub mod mine;
 pub mod review;
 pub mod stack;
 pub mod threads;
+pub mod tool;
 pub mod turn;
 
 use std::io;
@@ -28,9 +29,24 @@ pub use error::{FailKind, ForgeError};
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Login {
     LoggedIn,
-    LoggedOut { fix: String },
-    CliMissing { fix: String },
-    Failed { error: String },
+    LoggedOut {
+        fix: String,
+    },
+    CliMissing {
+        fix: String,
+    },
+    /// The CLI is older than the version PR Craft is tested with; `message` says which.
+    CliOld {
+        message: String,
+        fix: String,
+    },
+    /// The token lacks a scope the forge calls need.
+    Scope {
+        fix: String,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 /// How long a call to a forge CLI may take before it is stopped, with whatever it started. A CLI that waits on a dead socket would
@@ -68,10 +84,20 @@ fn ran_write(cli: &str, error: &io::Error) -> ForgeError {
 /// Asks `<cli> auth status`. A forge is signed in when any host its CLI knows is (one dead host, such as an unused
 /// gitlab.com without a token, does not pause the others). Blocks for as long as the CLI takes; call it off the UI thread.
 pub fn login(forge: Forge) -> Login {
-    match hosts(forge) {
-        Ok(hosts) if hosts.iter().any(|h| h.signed_in) => Login::LoggedIn,
-        Ok(_) => classify(forge, Ok(false)),
-        Err(login) => login,
+    let text = match auth_text(forge) {
+        Ok(text) => text,
+        Err(login) => return login,
+    };
+    read_login(forge, &text)
+}
+
+fn read_login(forge: Forge, text: &str) -> Login {
+    if forge == Forge::GitHub && missing_scopes(text) {
+        Login::Scope { fix: SCOPE_FIX.into() }
+    } else if parse_auth_status(text).iter().any(|h| h.signed_in) {
+        Login::LoggedIn
+    } else {
+        signed_out(forge)
     }
 }
 
@@ -85,9 +111,30 @@ pub struct ForgeHost {
 /// Every host the forge's CLI knows and whether it can act there. Both CLIs exit non-zero when any one host fails,
 /// so the answer is read per host from what they print. Blocks on the CLI.
 pub fn hosts(forge: Forge) -> Result<Vec<ForgeHost>, Login> {
-    let out = bounded::run(Command::new(forge.cli()).args(["auth", "status"]), LOGIN_LIMIT).map_err(|e| classify(forge, Err(e)))?;
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    Ok(parse_auth_status(&text))
+    auth_text(forge).map(|text| parse_auth_status(&text))
+}
+
+/// What `<cli> auth status` prints, or why it could not be asked.
+fn auth_text(forge: Forge) -> Result<String, Login> {
+    let out = bounded::run(Command::new(tool::resolve(forge.cli())).args(["auth", "status"]), LOGIN_LIMIT).map_err(|e| classify(forge, Err(e)))?;
+    Ok(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+/// What the forge calls need of a GitHub token, and the command that adds what is missing.
+const SCOPE_FIX: &str = "gh auth refresh -s repo,read:org";
+
+/// Whether gh's `auth status` says the token lacks a scope it needs.
+fn missing_scopes(text: &str) -> bool {
+    let text = text.to_lowercase();
+    text.contains("missing required") && text.contains("scope")
+}
+
+/// The login of a forge whose CLI lists no signed-in host: an old CLI is named, else the user is asked to log in.
+pub fn signed_out(forge: Forge) -> Login {
+    match tool::old_note(forge.cli()) {
+        Some(message) => Login::CliOld { message, fix: format!("brew upgrade {}", forge.cli()) },
+        None => classify(forge, Ok(false)),
+    }
 }
 
 /// gh and glab print the same shape: a host line at column 0, indented lines under it, and "Logged in to" under a host
@@ -153,7 +200,7 @@ pub fn review_requested_on(forge: Forge, host: &str) -> Result<(Vec<Change>, boo
 /// Both CLIs pick their server from the environment before the git remote of the working directory (`GH_HOST` for gh,
 /// `GITLAB_HOST` for glab), so setting it always sends the call to `host`. An empty `host` leaves the CLI's own choice.
 pub(crate) fn command(host: &str, cli: &str) -> Command {
-    let mut command = Command::new(cli);
+    let mut command = Command::new(tool::resolve(cli));
     if !host.is_empty() {
         match cli {
             "glab" => command.env("GITLAB_HOST", host),
@@ -200,7 +247,13 @@ fn finished(cli: &str, args: &[&str], out: std::process::Output) -> Result<Vec<u
         Ok(out.stdout)
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        Err(ForgeError::exited(format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim()), &stderr))
+        let message = format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim());
+        let error = ForgeError::exited(message, &stderr);
+        // An unexplained failure of a CLI below the tested minimum is most likely the CLI's age.
+        match tool::old_note(cli).filter(|_| error.kind == FailKind::Other) {
+            Some(note) => Err(ForgeError::new(FailKind::CliOld, format!("{}. {note}: run `brew upgrade {cli}`.", error.message))),
+            None => Err(error),
+        }
     }
 }
 
@@ -336,6 +389,14 @@ mod tests {
             assert!(fix.ends_with(forge.cli()), "{fix}");
         }
         assert!(matches!(classify(Forge::GitHub, Err(io::ErrorKind::PermissionDenied.into())), Login::Failed { .. }));
+    }
+
+    #[test]
+    fn a_token_missing_scopes_is_a_scope_login_with_the_command_that_adds_them() {
+        let text = "github.com\n  X Failed to log in to github.com account ada (keyring)\n  - Active account: true\n  - The token in keyring is missing required scopes: 'read:org'\n";
+        assert_eq!(read_login(Forge::GitHub, text), Login::Scope { fix: "gh auth refresh -s repo,read:org".into() });
+        let fine = "github.com\n  ✓ Logged in to github.com account ada (keyring)\n  - Token scopes: 'read:org', 'repo'\n";
+        assert_eq!(read_login(Forge::GitHub, fine), Login::LoggedIn);
     }
 
     #[test]
