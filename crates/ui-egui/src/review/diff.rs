@@ -339,7 +339,7 @@ pub(super) fn whole_file_ui(ui: &mut Ui, i: usize, file: &FileDiff, view: &Whole
             if let Some(url) = view.web_url
                 && ui.button(format!("Open on {}", view.forge)).clicked()
             {
-                acts.push(Act::OpenUrl(url.to_string()));
+                acts.push(Act::OpenUrl(url.to_string(), file.path.clone()));
             }
         });
         return;

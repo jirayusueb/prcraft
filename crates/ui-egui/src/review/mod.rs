@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use chrono::{DateTime, Utc};
 
-use craft::egui::{self, Align, Context, FontId, Layout, Margin, OpenUrl, Rect, RichText, ScrollArea, TextEdit, Ui, UiBuilder};
+use craft::egui::{self, Align, Context, FontId, Layout, Margin, Rect, RichText, ScrollArea, TextEdit, Ui, UiBuilder};
 
 use pr_craft_core::ChangeRef;
 
@@ -532,9 +532,10 @@ enum Act {
     ConfirmPost,
     DismissPost,
     CopyMarkdown,
-    OpenOnForge,
-    /// Open this URL, as the forge shows something PR Craft cannot.
-    OpenUrl(String),
+    /// Open the change on the forge; the path is the file the open was about, when it was one.
+    OpenOnForge(Option<String>),
+    /// Open this URL, as the forge shows something PR Craft cannot, for this file.
+    OpenUrl(String, String),
     Back,
     ToggleWhole,
     ToggleSince,

@@ -65,7 +65,7 @@ impl Ready {
         let change = &self.view.change;
         bar.right(ui, |ui| {
             if components::title_action(ui, &format!("Open on {}", change.forge.name()), "").clicked() {
-                acts.push(Act::OpenOnForge);
+                acts.push(Act::OpenOnForge(None));
             }
             let open = components::title_action(ui, "Open", &keymap::label(ui, "review.open_locally"));
             self.local.trigger.set(Some(open.rect));

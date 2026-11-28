@@ -16,4 +16,5 @@ pr-craft-core = { workspace = true }
 pr-craft-forge = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 thiserror = { workspace = true }

@@ -320,7 +320,7 @@ impl Ready {
                 "next" => Some(Act::ThreadStep { forward: true }),
                 "prev" => Some(Act::ThreadStep { forward: false }),
                 "markdown" => Some(Act::CopyMarkdown),
-                "forge" => Some(Act::OpenOnForge),
+                "forge" => Some(Act::OpenOnForge(self.thread_path())),
                 _ => None,
             };
             acts.extend(act);
