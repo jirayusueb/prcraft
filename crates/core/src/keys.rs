@@ -346,6 +346,7 @@ pub const ACTIONS: &[Action] = &[
     act("settings.page.keyboard", Scope::Settings, "Page: Keyboard", "7", &[]),
     act("settings.page.sync", Scope::Settings, "Page: Offline and sync", "8", &[]),
     act("settings.page.permissions", Scope::Settings, "Page: Permissions", "9", &[]),
+    act("settings.page.about", Scope::Settings, "Page: About", "0", &[]),
     typing("settings.new_agent", Scope::Settings, "New review agent", "N", &[Cmd]),
     typing("settings.save_agent", Scope::Settings, "Save the agent", "S", &[Cmd]),
     act("settings.delete_agent", Scope::Settings, "Delete the agent", "Backspace", &[Cmd]),

@@ -31,6 +31,7 @@ pub struct Pages {
     opening: Option<(Receiver<Result<(), String>>, String)>,
     /// A `diagnostics.get` on its way; its text goes to the clipboard when it arrives.
     diagnostics: Option<Receiver<Result<String, String>>>,
+    updates: Updates,
 }
 
 impl Pages {
@@ -44,6 +45,7 @@ impl Pages {
             battery: prefs::Battery::new(),
             opening: None,
             diagnostics: None,
+            updates: Updates::default(),
         }
     }
 
@@ -646,6 +648,116 @@ impl Pages {
     }
 }
 
+// ---- About ----
+
+#[derive(Clone, Copy)]
+enum Step {
+    Check,
+    Download,
+}
+
+/// The update check on the About page: the command on its way, what it answered, and the zip once saved.
+#[derive(Default)]
+struct Updates {
+    running: Option<(Step, Receiver<Result<Value, String>>)>,
+    line: Option<Result<String, String>>,
+    /// The version `update.download` would fetch.
+    offer: Option<String>,
+    saved: Option<String>,
+}
+
+impl Updates {
+    fn finish(&mut self, step: Step, said: Result<Value, String>) {
+        self.line = Some(said.and_then(|answer| match step {
+            Step::Check => {
+                let latest = answer["latest"].as_str();
+                self.offer = None;
+                match (latest, answer["newer"].as_bool() == Some(true)) {
+                    (Some(latest), true) if !answer["asset"].is_null() => {
+                        self.offer = Some(latest.to_string());
+                        Ok(format!("PR Craft {latest} is available"))
+                    }
+                    (Some(latest), true) => Ok(format!("PR Craft {latest} is available, but its release has no zip for this Mac.")),
+                    (None, _) => Ok("No PR Craft release is published yet.".to_string()),
+                    _ => Ok("You have the latest version".to_string()),
+                }
+            }
+            Step::Download => {
+                self.offer = None;
+                self.saved = Some(answer["path"].as_str().ok_or("update.download answered without a path (E-ENCODE)")?.to_string());
+                Ok("Saved to Downloads".to_string())
+            }
+        }));
+    }
+
+    fn start(&mut self, step: Step, command: &'static str, params: Value) {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // The page may have closed first; nobody is left to tell.
+            let _ = tx.send(pr_craft_engine::run(command, &params).map_err(crate::fail));
+        });
+        self.running = Some((step, rx));
+        self.line = None;
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
+        if let Some((step, rx)) = self.running.take() {
+            match rx.try_recv() {
+                Ok(said) => self.finish(step, said),
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                    self.running = Some((step, rx));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+    }
+}
+
+/// What PR Craft does not do yet, each with the way round it.
+const KNOWN_LIMITS: [&str; 5] = [
+    "A suggested change shows as a comment, with no button to apply it. Open on forge to apply it.",
+    "Markdown tables show as text. Open on forge to see the table.",
+    "A GitLab comment on several lines is pinned to the last line. Open on forge to see the whole range.",
+    "Conflicting file names are not told apart here. Open on forge to see them.",
+    "A comment pinned to a point on an image or to a notebook cell is not shown on the diff. Open on forge to read it.",
+];
+
+impl Pages {
+    pub fn about(&mut self, ui: &mut Ui) {
+        self.updates.poll(ui.ctx());
+        let commit = option_env!("PR_CRAFT_COMMIT").unwrap_or("dev");
+        title(ui, "About");
+        note(ui, &format!("PR Craft {}, commit {}", env!("CARGO_PKG_VERSION"), commit.get(..7).unwrap_or(commit)));
+        self.notice_line(ui);
+        ui.add_space(theme::SPACE_2);
+        section(ui, "Updates");
+        if ui.add_enabled(self.updates.running.is_none(), egui::Button::new("Check for updates")).clicked() {
+            self.updates.start(Step::Check, "update.check", Value::Null);
+        }
+        match &self.updates.line {
+            Some(Ok(text)) => live_label(ui, text.as_str(), theme::pal(ui).moss_text),
+            Some(Err(error)) => live_label(ui, error.as_str(), theme::pal(ui).rose_text),
+            None if self.updates.running.is_some() => live_label(ui, "Working…", theme::pal(ui).graphite),
+            None => {}
+        }
+        if self.updates.offer.is_some() && ui.add_enabled(self.updates.running.is_none(), egui::Button::new("Download")).clicked() {
+            self.updates.start(Step::Download, "update.download", json!({}));
+        }
+        if let Some(path) = self.updates.saved.clone()
+            && ui.button("Show in Finder").clicked()
+        {
+            self.open_later(&["-R", &path], "Opened the folder.".to_string());
+        }
+        note(ui, "Updates are not installed for you: quit PR Craft, open the zip, and replace the app in Applications");
+        ui.add_space(theme::SPACE_2);
+        section(ui, "Known limits");
+        for limit in KNOWN_LIMITS {
+            note(ui, &format!("•  {limit}"));
+        }
+    }
+}
+
 // ---- Permissions ----
 
 /// What PR Craft asks macOS for, why, and where the pane is. `None` for a grant with no System Settings pane.
@@ -710,6 +822,21 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_answer_says_what_it_found_and_offers_the_download_only_when_there_is_a_zip() {
+        let mut u = Updates::default();
+        u.finish(Step::Check, Ok(json!({ "latest": "0.2.0", "newer": true, "asset": { "name": "z", "size": 1 } })));
+        assert_eq!(u.line, Some(Ok("PR Craft 0.2.0 is available".to_string())));
+        assert_eq!(u.offer.as_deref(), Some("0.2.0"));
+        u.finish(Step::Download, Ok(json!({ "path": "/Users/a/Downloads/z.zip" })));
+        assert_eq!((u.line, u.saved.as_deref(), u.offer), (Some(Ok("Saved to Downloads".to_string())), Some("/Users/a/Downloads/z.zip"), None));
+        let mut u = Updates::default();
+        u.finish(Step::Check, Ok(json!({ "latest": "0.1.0", "newer": false, "asset": null })));
+        assert_eq!(u.line, Some(Ok("You have the latest version".to_string())));
+        u.finish(Step::Check, Err("offline (E-UPDATE)".into()));
+        assert_eq!(u.line, Some(Err("offline (E-UPDATE)".to_string())));
+    }
 
     #[test]
     fn a_row_with_a_conflict_or_another_apps_chord_is_flagged_in_words() {

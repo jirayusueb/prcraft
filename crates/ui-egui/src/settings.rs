@@ -28,11 +28,12 @@ pub enum Tab {
     Keyboard,
     Sync,
     Permissions,
+    About,
 }
 
 impl Tab {
     /// Each page, its name, and the registry action that opens it.
-    const ALL: [(Tab, &'static str, &'static str); 9] = [
+    const ALL: [(Tab, &'static str, &'static str); 10] = [
         (Tab::Engine, "AI engine", "settings.page.engine"),
         (Tab::Sees, "Privacy", "settings.page.sees"),
         (Tab::Agents, "Review agents", "settings.page.agents"),
@@ -42,6 +43,7 @@ impl Tab {
         (Tab::Keyboard, "Keyboard", "settings.page.keyboard"),
         (Tab::Sync, "Offline and sync", "settings.page.sync"),
         (Tab::Permissions, "Permissions", "settings.page.permissions"),
+        (Tab::About, "About", "settings.page.about"),
     ];
 }
 
@@ -139,6 +141,7 @@ impl Settings {
             Tab::Keyboard => "keyboard",
             Tab::Sync => "sync",
             Tab::Permissions => "permissions",
+            Tab::About => "about",
         }
     }
 
@@ -291,6 +294,7 @@ impl Settings {
                 Tab::Keyboard => self.pages.keyboard(ui),
                 Tab::Sync => self.pages.sync(ui),
                 Tab::Permissions => self.pages.permissions(ui),
+                Tab::About => self.pages.about(ui),
             }
         });
     }

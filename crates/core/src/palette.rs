@@ -162,7 +162,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
 ];
 
 /// Each Settings page: its id in [`Target::Settings`], its name (the one on the Settings tab) and the action that opens it.
-const PAGES: [(&str, &str, &str); 9] = [
+const PAGES: [(&str, &str, &str); 10] = [
     ("engine", "AI engine", "settings.page.engine"),
     ("sees", "Privacy", "settings.page.sees"),
     ("agents", "Review agents", "settings.page.agents"),
@@ -172,6 +172,7 @@ const PAGES: [(&str, &str, &str); 9] = [
     ("keyboard", "Keyboard", "settings.page.keyboard"),
     ("sync", "Offline and sync", "settings.page.sync"),
     ("permissions", "Permissions", "settings.page.permissions"),
+    ("about", "About", "settings.page.about"),
 ];
 
 /// What the open review can do right now, so the palette offers only keys that would act. Without it (the CLI) every action of the

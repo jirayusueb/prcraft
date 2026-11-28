@@ -1,5 +1,6 @@
 //! Workspace tooling: `cargo xtask <command>`.
 
+mod bundle;
 mod layers;
 
 use std::path::{Path, PathBuf};
@@ -11,14 +12,19 @@ usage: cargo xtask <command>
 commands:
   ci       fmt --check, clippy -D warnings, check of the render tests, test, doctest, layers (stops at the first failure)
   test     workspace tests (cargo nextest when installed, else cargo test), then doctests
+  bundle   build dist/PR Craft.app (ad-hoc signed), its zip and SHA256SUMS.txt; --universal adds an Intel build
+  release  refuse unless the live ledger and the weekly macOS build allow it, bundle, then print (never run) the gh release command
   layers   enforce the crate dependency layering (AGENTS.md \"This repository\")
 ";
 
 fn main() -> ExitCode {
-    let result = match std::env::args().nth(1).as_deref() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.first().map(String::as_str) {
         Some("ci") => ci(),
         Some("test") => test().and_then(|()| doctest()),
         Some("layers") => check_layers(),
+        Some("bundle") => bundle::bundle(&args[1..]),
+        Some("release") => bundle::release(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())
