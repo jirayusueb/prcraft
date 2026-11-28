@@ -77,4 +77,4 @@ Paths and conventions:
 
 - No crate allows `unsafe` (`unsafe_code = "forbid"` in the workspace).
 - Every craft-libs crate comes through the `craft` facade at the one `rev` in the root `Cargo.toml`; the `[patch.crates-io]` egui pins match that revision's `craft::egui_fork::REV`.
-- Not yet wired: translations (rule 16), the automation interface and `pr-craft-cli mcp` (rule 18), packaging. Visualize (PRODUCT.md) needs an HTML sandbox that rule 11 forbids; it stays out until an RFC settles it.
+- Not yet wired: translations (rule 16), the automation interface and `pr-craft-cli mcp` (rule 18), packaging. Visualize draws AI-made template JSON or SVG natively, with no HTML and no webview; it waits for its own design (`docs/designs/long-term-roadmap.md`).

@@ -22,6 +22,10 @@ graph LR
   M2 --> M9[M9 Settings and appearance]
 ```
 
+## Long-term horizons
+
+[docs/designs/long-term-roadmap.md](docs/designs/long-term-roadmap.md) takes the built milestones to a team of 3 to 8 engineers who each clear their daily queue without the forge web UI. It runs in five horizons, each closed by an exit line: H1 Prove (live writes, diagnostics, additive-only data), H2 Ship (.app, Releases, update check, quota safety), H3 Trial (5 days, banners, tally), H4 Cap (AI ceiling, worktree cleanup, pruning), H5 Extras (Visualize, Babysit, self-update). Nothing in it asks storytold for a change.
+
 ## Rules every milestone keeps
 
 - Every user action is an engine command in `crates/engine` first, then a panel and a `pr-craft-cli` call (AGENTS.md rule 14). A milestone is not done while the CLI cannot do what the panel does.
@@ -79,7 +83,7 @@ The core loop. Read a change, comment on lines, submit one review.
 - Commands, built: `inbox.back_to_you`, `review.since_last` (marks the review `rewritten` when the reviewed commit was force-pushed away), `review.hand_off` (never run live, because it changes the reviewers on the forge), `notify.list`, `notify.pause` (toggle, or until a time), `notify.seen`.
 - Keys: inbox queue Back to you `B`, Notifications `N` (pause `P`, mark seen `M`), Since your review `R`, hand-off sheet `H`.
 - Scope: a reviewed change leaves the count while it is with the author and returns on new commits, replies, resolved threads, a re-request, a mention or a dismissed approval. Re-review shows only commits since the user's last review. Quiet hours and Focus hold notifications without dropping them.
-- Blocked: system banners, the Dock badge, the menu-bar item and the 10:00 digest (frames `09`, `20`, `65`). They need macOS notification support from craft-libs (rule 9; the workspace forbids `unsafe`). craft-libs has none today: its appkit crate only watches menu tracking. The craft-libs issue is not opened yet; opening it needs the user's approval. Until then the app says these are not available.
+- Blocked: the Dock badge and the menu-bar item (frames `09`, `20`). They need appkit bindings and the workspace forbids `unsafe`; they are out of the long-term roadmap. Banners are planned through `osascript display notification` in its H3; the 10:00 digest (`65`) is not planned yet. Until then the app says these are not available.
 - Status: built except the blocked part. Done check not met: the banner half is blocked. Run: live, read-only `inbox.back_to_you` found one real change back with the user (new commits). Not run: the UI on screen, and GitLab outside fixtures (`glab` is logged out on the dev Mac).
 - Done when a new commit on a reviewed change moves it back into the inbox and raises one banner.
 
@@ -91,7 +95,7 @@ The core loop. Read a change, comment on lines, submit one review.
 - Built: Markdown rendered and source with block and word marks (`25`, `69`); images in 2-up, Swipe, Onion skin and Difference, with an ignore slider and the share of pixels changed (`26`, `78`); notebook cells and outputs, with changed outputs detected (`80`).
 - Built for `79`: SVG Before and After on a checkerboard (a small icon grows up to 2.5×, 24 px shows at 60 px), and "What changed in the markup" from `pr_craft_core::svg`: elements matched by id, else by tag and place under their parent; one row per changed attribute or text, then added and removed elements (path data shows its first two segments and its point count). The view switcher offers Rendered, Structure (the rows alone) and Source; `⇧S` steps through them for an SVG. `C` comments on the picked row, else the first change, and posts on that element's source line; the draft remembers it was written on the rendered view (`on_rendered` on the draft and on `draft.add`). `E` edits the draft in focus. File headers of every file follow the frame: path and counts, then the views, Viewed and `V`.
 - Cut, and said so in the UI: comments pinned to a point on an image or to a notebook cell, notebook image outputs. Markdown tables show as text. SVG rows past 500, and SVGs over 4 MB, 20,000 elements or 64 levels deep, are counted or refused with the reason.
-- Rule 9 departure: the engine has its own small base64 encoder, because L5 cannot use the `craft` facade. It carries a `shortcut:` comment to move it to craft-libs.
+- Rule 9 departure: the engine has its own small base64 encoder, because the `craft` facade at the pinned rev has no base64 crate and a new crates.io dependency needs a licence check (rule 26). It carries a `shortcut:` comment to move it to craft-libs.
 - Status: built. Done check not run: posting a comment from a rendered view needs a sandbox PR and the user's approval. Run: `review.blob` returned the same bytes as `gh`'s raw output on a real PR. Not run: the views on screen, and GitLab outside fixtures.
 - Done when a comment made in a rendered view posts on the matching source line.
 
@@ -111,8 +115,8 @@ The core loop. Read a change, comment on lines, submit one review.
 
 - Frames: `27` Inbox Your changes, `75` Back to you as the author, `97` Draft to ready for review, `11` Babysit, `44` Paused after an error, `70b` Tooltip on a disabled push, `94` CI job log, `88` Merge, `89` Merge conflict.
 - Commands: `pr.ready`, `pr.set_reviewers`, `pr.set_labels`, `checks.log`, `checks.rerun`, `babysit.start`, `babysit.set_power`, `babysit.approve`, `babysit.stop`, `merge.start` (squash, merge commit or rebase), `merge.queue`, `merge.auto`, `conflict.draft_fix`.
-- Scope: per owned change, each power (fix failing pipelines, draft replies, rebase) is off, ask first, or automatic. Pushes and replies default to ask first.
-- Risk: pushes and rebases change a shared branch. Automatic mode for pushes needs its own design review before it ships. Merging cannot be undone: `merge.start` always asks, and a conflict fix drafted by the AI engine is a commit the user approves before any push.
+- Scope: per owned change, each power (fix failing pipelines, draft replies, rebase) is off or ask first. The AI engine returns a fix as a patch; the app applies it in a local checkout and shows it as a review; the user pushes or posts with one explicit action. No power runs automatically (docs/designs/long-term-roadmap.md, D2).
+- Risk: pushes and rebases change a shared branch. Merging cannot be undone: `merge.start` always asks, and a conflict fix drafted by the AI engine is a commit the user approves before any push.
 - M7a, the parts that are not Babysit: built and reviewed (three rounds each of security and correctness review, CI green).
   - Built: `27` the Your changes queue (`Y`), read per host and honest about truncated and failed hosts; `75` Back to you as the author (`inbox.back_to_you` returns `yours`); `97` `pr.ready`, `pr.set_reviewers` and `pr.set_labels`, which send only the reader's change against a fresh read; `94` `checks.list`, `checks.log` (the last 2 MB and 2000 lines, escapes stripped, the cut stated) and `checks.rerun`; `88` `merge.start`, `merge.queue` and `merge.auto`; `89` conflict display. Avatar initials are 11px, one letter under 22px.
   - Safety: `merge.*` and `checks.rerun` need `confirm` and the `head_sha` the user saw, and a merge refuses if the branch moved. The confirm in the UI arms after 600 ms, so neither key repeat nor a double click skips it. Writes have a deadline, a timeout says the merge or change may already have happened, and nothing is retried.
@@ -144,14 +148,13 @@ The core loop. Read a change, comment on lines, submit one review.
 
 ## Blocked
 
-- Visualize (`16`, `41`, `42`, `55`, `76`, `77`, `86`). It runs AI-made HTML in a sandbox, and rule 11 forbids a webview. It waits for an RFC in storytold/craft-contrib.
-- Babysit (`11`, `44`, `70b`) and `conflict.draft_fix`. They wait on the user's design review (M7).
+- Visualize (`16`, `41`, `42`, `55`, `76`, `77`, `86`). Redefined (docs/designs/long-term-roadmap.md, D1): the AI engine returns template JSON or SVG that the app draws natively, with no HTML and no webview. It waits for its own design after the team trial.
+- Babysit (`11`, `44`, `70b`) and `conflict.draft_fix`. Shape decided (D2: patch applied by the app, pushed by the user); they wait for their own design after the team trial.
 - Live writes to a forge: a post to a GitHub PR and a GitLab MR, `thread.reply`, and `thread.resolve`. They need a sandbox PR and MR, the user's approval, and a gitlab.com token. The done checks of M2 and M5 wait on this.
 
 ## Cross-cutting work without a milestone yet
 
 - Translations (rule 16). User text goes through the translation system once it is wired. Until then, English strings stay in one place per crate.
 - Automation interface and `pr-craft-cli mcp` with `--automation-read-root` and `--automation-write-root` (rule 18).
-- Packaging, launch at login, and updates with opt-in crash reports (`99` About and updates; drafts and queued posts survive an update).
-- [PRODUCT.md](PRODUCT.md) "Platform" and "Stack" still say web and undecided. The stack is Rust on egui (AGENTS.md). Update PRODUCT.md in its own change.
+- Packaging and updates (`99` About and updates; drafts and queued posts survive an update): planned in H2 of the long-term roadmap. Launch at login is not planned. Crash reports are replaced by a `diagnostics.get` block the user copies.
 - Figma design file. The audit is clean on both pages: no contrast failures, no text under 11px, and no glyph icons (icons are SF Symbols). Snooze and Done are removed from every frame. The page "Desktop App — Dark" holds copies, not components (the Figma MCP cannot make instances), so a changed light screen has to be cloned and re-themed again. The app draws its icons from its own font, not SF Symbol images.
