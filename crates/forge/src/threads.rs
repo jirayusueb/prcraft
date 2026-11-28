@@ -25,7 +25,7 @@ const HUNK_LINES: usize = 6;
 
 /// The review threads of `change`. `head_sha` is the head commit of the diff being reviewed (GitLab's `diff_refs.head_sha`),
 /// against which a GitLab discussion is judged outdated. Blocks on the CLI; call it off the UI thread.
-pub fn list(change: &ChangeRef, head_sha: &str) -> Result<ThreadRead, String> {
+pub fn list(change: &ChangeRef, head_sha: &str) -> Result<ThreadRead, crate::ForgeError> {
     match change.forge {
         Forge::GitHub => github_list(change),
         Forge::GitLab => gitlab_list(change, head_sha),
@@ -160,7 +160,7 @@ struct GithubPage {
     next: Option<String>,
 }
 
-fn github_list(change: &ChangeRef) -> Result<ThreadRead, String> {
+fn github_list(change: &ChangeRef) -> Result<ThreadRead, crate::ForgeError> {
     let (owner, name) = change.repo.split_once('/').ok_or_else(|| format!("{} is not `owner/name`", change.repo))?;
     let (mut threads, mut after) = (Vec::new(), None);
     for _ in 0..PAGES {
@@ -175,7 +175,7 @@ fn github_list(change: &ChangeRef) -> Result<ThreadRead, String> {
     Ok(read_of(threads, gaps))
 }
 
-fn github_page(host: &str, owner: &str, name: &str, number: u64, after: Option<&str>) -> Result<GithubPage, String> {
+fn github_page(host: &str, owner: &str, name: &str, number: u64, after: Option<&str>) -> Result<GithubPage, crate::ForgeError> {
     let mut fields = vec![("-f", format!("query={GITHUB_QUERY}")), ("-f", format!("owner={owner}")), ("-f", format!("name={name}"))];
     fields.push(("-F", format!("number={number}")));
     fields.extend(after.map(|cursor| ("-f", format!("after={cursor}"))));
@@ -186,11 +186,11 @@ fn github_page(host: &str, owner: &str, name: &str, number: u64, after: Option<&
     parse_github(&run_on(host, "gh", &args)?)
 }
 
-fn parse_github(bytes: &[u8]) -> Result<GithubPage, String> {
+fn parse_github(bytes: &[u8]) -> Result<GithubPage, crate::ForgeError> {
     let answer: GqlAnswer = from_json(bytes)?;
     let Some(pull) = answer.data.and_then(|d| d.repository).and_then(|r| r.pull_request) else {
         let why = answer.errors.first().map_or("the change is not visible to this login", |e| e.message.as_str());
-        return Err(format!("GitHub did not return the change: {why}"));
+        return Err(format!("GitHub did not return the change: {why}").into());
     };
     let threads = pull.review_threads;
     let next = threads.page_info.has_next_page.then_some(threads.page_info.end_cursor).flatten();
@@ -276,7 +276,7 @@ struct GlPosition {
     head_sha: Option<String>,
 }
 
-fn gitlab_list(change: &ChangeRef, head_sha: &str) -> Result<ThreadRead, String> {
+fn gitlab_list(change: &ChangeRef, head_sha: &str) -> Result<ThreadRead, crate::ForgeError> {
     let base = format!("projects/{}/merge_requests/{}/discussions?", project_path(&change.repo), change.number);
     let (discussions, cut) = pages::<GlDiscussion>(change.host_name(), &base)?;
     let gaps = cut.then(|| format!("GitLab has more than {} discussions", PAGES * 100)).into_iter().collect();
@@ -336,11 +336,11 @@ const GITHUB_RESOLVE: &str = "mutation($thread: ID!) { resolveReviewThread(input
 const GITHUB_UNRESOLVE: &str = "mutation($thread: ID!) { unresolveReviewThread(input: {threadId: $thread}) { thread { id isResolved } } }";
 
 /// A thread id goes into a URL on GitLab and into a variable on GitHub; both forges' ids are plain tokens.
-fn checked_id(thread_id: &str) -> Result<&str, String> {
+fn checked_id(thread_id: &str) -> Result<&str, crate::ForgeError> {
     if !thread_id.is_empty() && thread_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
         Ok(thread_id)
     } else {
-        Err(format!("{thread_id:?} is not a thread id"))
+        Err(format!("{thread_id:?} is not a thread id").into())
     }
 }
 
@@ -360,7 +360,7 @@ fn gitlab_request(change: &ChangeRef, method: &str, tail: &str, body: &Value) ->
 }
 
 /// Answers a thread. Refuses an empty body. The text travels as a variable (GitHub) or a JSON value (GitLab), never in the query.
-pub fn reply_request(change: &ChangeRef, thread_id: &str, body: &str) -> Result<Request, String> {
+pub fn reply_request(change: &ChangeRef, thread_id: &str, body: &str) -> Result<Request, crate::ForgeError> {
     let id = checked_id(thread_id)?;
     if body.trim().is_empty() {
         return Err("A reply needs some text.".into());
@@ -372,7 +372,7 @@ pub fn reply_request(change: &ChangeRef, thread_id: &str, body: &str) -> Result<
 }
 
 /// Resolves a thread, or reopens it with `resolved` false.
-pub fn resolve_request(change: &ChangeRef, thread_id: &str, resolved: bool) -> Result<Request, String> {
+pub fn resolve_request(change: &ChangeRef, thread_id: &str, resolved: bool) -> Result<Request, crate::ForgeError> {
     let id = checked_id(thread_id)?;
     Ok(match change.forge {
         Forge::GitHub => github_request(if resolved { GITHUB_RESOLVE } else { GITHUB_UNRESOLVE }, &[("thread", id)], change),
@@ -381,14 +381,14 @@ pub fn resolve_request(change: &ChangeRef, thread_id: &str, resolved: bool) -> R
 }
 
 /// Sends `request` to the forge. GitHub's GraphQL answers can carry `errors` next to a clean exit; they fail here too.
-pub fn execute(request: &Request) -> Result<(), String> {
+pub fn execute(request: &Request) -> Result<(), crate::ForgeError> {
     let args: Vec<&str> = request.args.iter().map(String::as_str).collect();
     let out = match &request.input {
         Some(input) => run_with_input_on(&request.host, request.cli, &args, input.as_bytes())?,
         None => run_write_on(&request.host, request.cli, &args)?,
     };
     match serde_json::from_slice::<Value>(&out).ok().as_ref().and_then(|v| v.get("errors")).and_then(Value::as_array).and_then(|e| e.first()) {
-        Some(error) => Err(format!("{} refused it: {}", request.cli, error.get("message").and_then(Value::as_str).unwrap_or("unknown error"))),
+        Some(error) => Err(format!("{} refused it: {}", request.cli, error.get("message").and_then(Value::as_str).unwrap_or("unknown error")).into()),
         None => Ok(()),
     }
 }
@@ -443,7 +443,7 @@ mod tests {
     fn a_github_answer_without_the_change_is_an_error() {
         assert!(
             parse_github(br#"{"data":{"repository":null},"errors":[{"message":"Could not resolve"}]}"#)
-                .is_err_and(|e| e.contains("Could not resolve"))
+                .is_err_and(|e| e.message.contains("Could not resolve"))
         );
     }
 

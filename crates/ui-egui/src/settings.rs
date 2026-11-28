@@ -496,8 +496,7 @@ impl Settings {
             return;
         }
         self.notice = None;
-        self.repos.saving =
-            Some(Fetch::start(ctx, move || pr_craft_engine::settings::set(&patch).map(|_| saved.to_string()).map_err(|e| e.to_string())));
+        self.repos.saving = Some(Fetch::start(ctx, move || pr_craft_engine::settings::set(&patch).map(|_| saved.to_string()).map_err(crate::fail)));
     }
 
     /// Takes in the answer of a folder save: the message shows, the typed text is replaced by what was saved, or kept on a refusal.

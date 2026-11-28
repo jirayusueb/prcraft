@@ -33,7 +33,7 @@ pub struct GitLabDiffRefs {
 }
 
 /// Title, author, branches and the commits comments anchor to. Blocks on the CLI.
-pub fn change_meta(change: &ChangeRef) -> Result<ChangeMeta, String> {
+pub fn change_meta(change: &ChangeRef) -> Result<ChangeMeta, crate::ForgeError> {
     match change.forge {
         Forge::GitHub => {
             let number = change.number.to_string();
@@ -51,7 +51,7 @@ pub fn change_meta(change: &ChangeRef) -> Result<ChangeMeta, String> {
 }
 
 /// The whole change as one unified diff. Blocks on the CLI.
-pub fn diff(change: &ChangeRef) -> Result<String, String> {
+pub fn diff(change: &ChangeRef) -> Result<String, crate::ForgeError> {
     let number = change.number.to_string();
     let bytes = match change.forge {
         Forge::GitHub => run_on(change.host_name(), "gh", &["pr", "diff", &number, "-R", &change.repo])?,
@@ -66,40 +66,40 @@ fn github_compare_path(repo: &str, base: &str, head: &str) -> String {
 }
 
 /// The commit id `gh api --jq .merge_base_commit.sha` printed. Anything else is an error, never a guess.
-fn merge_base(output: &[u8]) -> Result<String, String> {
+fn merge_base(output: &[u8]) -> Result<String, crate::ForgeError> {
     let text = String::from_utf8_lossy(output);
     let sha = text.trim();
     if sha.len() >= 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(sha.to_string())
     } else {
-        Err(format!("GitHub named no merge-base commit: {sha:?}"))
+        Err(format!("GitHub named no merge-base commit: {sha:?}").into())
     }
 }
 
 /// Posts every draft, the body and the verdict as one GitHub review.
-pub fn github_submit(change: &ChangeRef, meta: &ChangeMeta, verdict: Verdict, body: &str, drafts: &[Draft]) -> Result<(), String> {
+pub fn github_submit(change: &ChangeRef, meta: &ChangeMeta, verdict: Verdict, body: &str, drafts: &[Draft]) -> Result<(), crate::ForgeError> {
     let path = format!("repos/{}/pulls/{}/reviews", change.repo, change.number);
     let input = github_review_json(meta, verdict, body, drafts).to_string();
     run_with_input_on(change.host_name(), "gh", &["api", &path, "--method", "POST", "--input", "-"], input.as_bytes()).map(drop)
 }
 
 /// Posts one draft as a GitLab discussion on its line.
-pub fn gitlab_post_draft(change: &ChangeRef, meta: &ChangeMeta, draft: &Draft) -> Result<(), String> {
+pub fn gitlab_post_draft(change: &ChangeRef, meta: &ChangeMeta, draft: &Draft) -> Result<(), crate::ForgeError> {
     let input = gitlab_discussion_json(meta, draft)?.to_string();
     gitlab_post(change, &mr_path(change, "/discussions"), &input)
 }
 
 /// Posts the general comment as a GitLab note.
-pub fn gitlab_post_note(change: &ChangeRef, body: &str) -> Result<(), String> {
+pub fn gitlab_post_note(change: &ChangeRef, body: &str) -> Result<(), crate::ForgeError> {
     gitlab_post(change, &mr_path(change, "/notes"), &json!({ "body": body }).to_string())
 }
 
 /// Approves the merge request.
-pub fn gitlab_approve(change: &ChangeRef) -> Result<(), String> {
+pub fn gitlab_approve(change: &ChangeRef) -> Result<(), crate::ForgeError> {
     run_write_on(change.host_name(), "glab", &["api", &mr_path(change, "/approve"), "--method", "POST"]).map(drop)
 }
 
-fn gitlab_post(change: &ChangeRef, path: &str, input: &str) -> Result<(), String> {
+fn gitlab_post(change: &ChangeRef, path: &str, input: &str) -> Result<(), crate::ForgeError> {
     let args = ["api", path, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"];
     run_with_input_on(change.host_name(), "glab", &args, input.as_bytes()).map(drop)
 }
@@ -148,7 +148,7 @@ fn github_review_json(meta: &ChangeMeta, verdict: Verdict, body: &str, drafts: &
     review
 }
 
-fn gitlab_discussion_json(meta: &ChangeMeta, draft: &Draft) -> Result<Value, String> {
+fn gitlab_discussion_json(meta: &ChangeMeta, draft: &Draft) -> Result<Value, crate::ForgeError> {
     let refs = meta.diff_refs.as_ref().ok_or("this merge request has no diff refs, so a comment cannot anchor to a line")?;
     let mut position = json!({
         "position_type": "text",
@@ -190,7 +190,7 @@ struct GitHubAuthor {
 }
 
 /// The meta, with no base commit yet, and the base branch's tip: [`change_meta`] asks GitHub for the merge-base.
-fn parse_github_meta(bytes: &[u8]) -> Result<(ChangeMeta, String), String> {
+fn parse_github_meta(bytes: &[u8]) -> Result<(ChangeMeta, String), crate::ForgeError> {
     let pr: GitHubMeta = from_json(bytes)?;
     let meta = ChangeMeta {
         title: pr.title,
@@ -221,7 +221,7 @@ struct GitLabAuthor {
     username: String,
 }
 
-fn parse_gitlab_meta(bytes: &[u8]) -> Result<ChangeMeta, String> {
+fn parse_gitlab_meta(bytes: &[u8]) -> Result<ChangeMeta, crate::ForgeError> {
     let mr: GitLabMeta = from_json(bytes)?;
     Ok(ChangeMeta {
         title: mr.title,
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn gitlab_comment_without_diff_refs_is_an_error() {
         let err = gitlab_discussion_json(&meta(None), &draft(None, ADDED)).expect_err("no refs, no anchor");
-        assert!(err.contains("diff refs"), "{err}");
+        assert!(err.message.contains("diff refs"), "{err}");
     }
 
     #[test]

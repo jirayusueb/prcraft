@@ -66,7 +66,7 @@ fn spawn<T: Send + 'static>(ctx: &Context, job: impl FnOnce() -> Result<T, Strin
 // ---- typed calls ----
 
 fn call<T: DeserializeOwned>(id: &str, params: &Value) -> Result<T, String> {
-    let value = pr_craft_engine::run(id, params).map_err(|e| e.to_string())?;
+    let value = pr_craft_engine::run(id, params).map_err(crate::fail)?;
     serde_json::from_value(value).map_err(|e| format!("{id} answered something unreadable: {e}"))
 }
 

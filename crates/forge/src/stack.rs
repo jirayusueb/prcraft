@@ -22,7 +22,7 @@ pub fn is_full_page(forge: Forge, count: usize) -> bool {
 
 /// Every open change of `repo` on `host` with its head and base branch. Blocks on the CLI; call it off the UI thread.
 // shortcut: one page per repository; walk pages when a repository keeps more open changes than `layer_limit`.
-pub fn open_layers(forge: Forge, host: &str, repo: &str) -> Result<Vec<StackLayer>, String> {
+pub fn open_layers(forge: Forge, host: &str, repo: &str) -> Result<Vec<StackLayer>, crate::ForgeError> {
     match forge {
         Forge::GitHub => {
             let limit = layer_limit(forge).to_string();
@@ -48,7 +48,7 @@ pub struct Compare {
 
 /// The unified diff of `head` against its merge base with `base`: what a stack adds, or what one layer adds.
 /// Blocks on the CLI; call it off the UI thread.
-pub fn compare_diff(change: &ChangeRef, base: &str, head: &str) -> Result<Compare, String> {
+pub fn compare_diff(change: &ChangeRef, base: &str, head: &str) -> Result<Compare, crate::ForgeError> {
     match change.forge {
         Forge::GitHub => {
             // GitHub reads a slash inside a ref in the path; every other special byte is escaped.
@@ -98,7 +98,7 @@ struct GitHubLayer {
     url: String,
 }
 
-fn parse_github_layers(bytes: &[u8], host: &str, repo: &str) -> Result<Vec<StackLayer>, String> {
+fn parse_github_layers(bytes: &[u8], host: &str, repo: &str) -> Result<Vec<StackLayer>, crate::ForgeError> {
     let prs: Vec<GitHubLayer> = from_json(bytes)?;
     Ok(prs
         .into_iter()
@@ -133,7 +133,7 @@ struct GitLabLayer {
     web_url: String,
 }
 
-fn parse_gitlab_layers(bytes: &[u8], host: &str, repo: &str) -> Result<Vec<StackLayer>, String> {
+fn parse_gitlab_layers(bytes: &[u8], host: &str, repo: &str) -> Result<Vec<StackLayer>, crate::ForgeError> {
     let mrs: Vec<GitLabLayer> = from_json(bytes)?;
     Ok(mrs
         .into_iter()
@@ -180,7 +180,7 @@ struct GitLabFileDiff {
 }
 
 /// GitLab's compare answer as the git unified text `parse_unified` reads.
-fn gitlab_compare_to_unified(bytes: &[u8]) -> Result<Compare, String> {
+fn gitlab_compare_to_unified(bytes: &[u8]) -> Result<Compare, crate::ForgeError> {
     let compare: GitLabCompare = from_json(bytes)?;
     if compare.compare_timeout {
         return Err("GitLab timed out comparing these branches, so it sent an incomplete diff. Open the stack on GitLab instead.".into());

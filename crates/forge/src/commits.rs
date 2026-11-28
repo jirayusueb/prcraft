@@ -21,7 +21,7 @@ const GITHUB_CAP: usize = 250;
 const GITHUB_PAGE: usize = 100;
 
 /// The commits of `change`, oldest first. Blocks on the CLI; call it off the UI thread.
-pub fn list(change: &ChangeRef) -> Result<CommitRead, String> {
+pub fn list(change: &ChangeRef) -> Result<CommitRead, crate::ForgeError> {
     match change.forge {
         Forge::GitHub => github_list(change),
         Forge::GitLab => {
@@ -32,7 +32,7 @@ pub fn list(change: &ChangeRef) -> Result<CommitRead, String> {
     }
 }
 
-fn github_list(change: &ChangeRef) -> Result<CommitRead, String> {
+fn github_list(change: &ChangeRef) -> Result<CommitRead, crate::ForgeError> {
     let mut commits = Vec::new();
     for page in 1..=GITHUB_CAP.div_ceil(GITHUB_PAGE) {
         let path = format!("repos/{}/pulls/{}/commits?per_page={GITHUB_PAGE}&page={page}", change.repo, change.number);
@@ -80,7 +80,7 @@ struct GhParent {
 }
 
 /// GitHub lists a pull request's commits oldest first.
-fn github_commits(bytes: &[u8]) -> Result<Vec<Commit>, String> {
+fn github_commits(bytes: &[u8]) -> Result<Vec<Commit>, crate::ForgeError> {
     let found: Vec<GhCommit> = from_json(bytes)?;
     Ok(found
         .into_iter()

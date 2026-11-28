@@ -59,7 +59,7 @@ pub struct Env {
 
 impl Env {
     pub fn from_process() -> Result<Env, CommandError> {
-        let dir = store::data_dir().map_err(CommandError::Store)?;
+        let dir = store::data_dir().map_err(CommandError::read)?;
         Ok(Env { dir, program: std::env::var_os("PR_CRAFT_CLAUDE").map_or_else(|| PathBuf::from("claude"), PathBuf::from) })
     }
 }
@@ -69,10 +69,6 @@ static AI: Mutex<()> = Mutex::new(());
 
 fn lock() -> MutexGuard<'static, ()> {
     AI.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn store_err(error: String) -> CommandError {
-    CommandError::Store(error)
 }
 
 fn json<T: Serialize>(value: T) -> Result<Value, CommandError> {
@@ -91,7 +87,7 @@ fn invalid(message: impl Into<String>) -> CommandError {
 /// Runs one AI command against the files in `env.dir`.
 pub fn command(env: &Env, id: &str, value: &Value) -> Result<Value, CommandError> {
     match id {
-        "ai.engine.get" => json(engine_view(env, store::load_ai(&env.dir).map_err(store_err)?)),
+        "ai.engine.get" => json(engine_view(env, store::load_ai(&env.dir).map_err(CommandError::read)?)),
         "ai.engine.set" => json(engine_set(env, optional(value)?)?),
         "ai.read.set" => json(read_set(env, crate::params(value)?)?),
         "agent.create" => json(agent_create(env, crate::params(value)?)?),
@@ -198,7 +194,7 @@ pub struct EnginePatch {
 
 fn engine_set(env: &Env, patch: EnginePatch) -> Result<EngineView, CommandError> {
     let _guard = lock();
-    let mut settings = store::load_ai(&env.dir).map_err(store_err)?;
+    let mut settings = store::load_ai(&env.dir).map_err(CommandError::read)?;
     let before = settings.clone();
     settings.engine = patch.engine.unwrap_or(settings.engine);
     settings.runs_at_once = patch.runs_at_once.unwrap_or(settings.runs_at_once);
@@ -212,7 +208,7 @@ fn engine_set(env: &Env, patch: EnginePatch) -> Result<EngineView, CommandError>
         return Err(invalid("the stuck threshold must be above 0, and long steps get at least as long"));
     }
     if settings != before {
-        store::save_ai(&env.dir, &settings).map_err(store_err)?;
+        store::save_ai(&env.dir, &settings).map_err(CommandError::write)?;
     }
     Ok(engine_view(env, settings))
 }
@@ -229,13 +225,13 @@ struct ReadSet {
 /// `ai.read.set`: replaces the read rules of one repository whole, or removes its override.
 fn read_set(env: &Env, p: ReadSet) -> Result<EngineView, CommandError> {
     let _guard = lock();
-    let mut settings = store::load_ai(&env.dir).map_err(store_err)?;
+    let mut settings = store::load_ai(&env.dir).map_err(CommandError::read)?;
     let key = repo_key(p.forge, &p.repo);
     match p.rules {
         Some(rules) => settings.repo_read.insert(key, rules),
         None => settings.repo_read.remove(&key),
     };
-    store::save_ai(&env.dir, &settings).map_err(store_err)?;
+    store::save_ai(&env.dir, &settings).map_err(CommandError::write)?;
     Ok(engine_view(env, settings))
 }
 
@@ -305,8 +301,8 @@ fn named(text: String, what: &str) -> Result<String, CommandError> {
 
 fn agent_create(env: &Env, new: NewAgent) -> Result<Agent, CommandError> {
     let _guard = lock();
-    let settings = store::load_ai(&env.dir).map_err(store_err)?;
-    let mut agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let settings = store::load_ai(&env.dir).map_err(CommandError::read)?;
+    let mut agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     let agent = Agent {
         id: next_id("agent"),
         name: named(new.name, "name")?,
@@ -321,13 +317,13 @@ fn agent_create(env: &Env, new: NewAgent) -> Result<Agent, CommandError> {
         extra: Default::default(),
     };
     agents.push(agent.clone());
-    store::save_agents(&env.dir, &agents).map_err(store_err)?;
+    store::save_agents(&env.dir, &agents).map_err(CommandError::write)?;
     Ok(agent)
 }
 
 fn agent_update(env: &Env, patch: AgentPatch) -> Result<Agent, CommandError> {
     let _guard = lock();
-    let mut agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let mut agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     let agent = agents.iter_mut().find(|agent| agent.id == patch.id).ok_or_else(|| invalid(format!("no agent {}", patch.id)))?;
     if let Some(name) = patch.name {
         agent.name = named(name, "name")?;
@@ -343,19 +339,19 @@ fn agent_update(env: &Env, patch: AgentPatch) -> Result<Agent, CommandError> {
     agent.spawn = patch.spawn.unwrap_or(agent.spawn);
     agent.runs_on = patch.runs_on.unwrap_or_else(|| agent.runs_on.clone());
     let updated = agent.clone();
-    store::save_agents(&env.dir, &agents).map_err(store_err)?;
+    store::save_agents(&env.dir, &agents).map_err(CommandError::write)?;
     Ok(updated)
 }
 
 /// Deleting an agent that is already gone is not an error. Runs it made keep their drafts.
 fn agent_delete(env: &Env, id: &str) -> Result<Value, CommandError> {
     let _guard = lock();
-    let mut agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let mut agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     let before = agents.len();
     agents.retain(|agent| agent.id != id);
     let deleted = agents.len() != before;
     if deleted {
-        store::save_agents(&env.dir, &agents).map_err(store_err)?;
+        store::save_agents(&env.dir, &agents).map_err(CommandError::write)?;
     }
     Ok(serde_json::json!({ "deleted": deleted }))
 }
@@ -363,7 +359,7 @@ fn agent_delete(env: &Env, id: &str) -> Result<Value, CommandError> {
 /// `agent.list`: every agent, or with `forge` and `repo` the ones that run on that repository.
 fn agent_list(env: &Env, filter: AgentFilter) -> Result<Vec<Agent>, CommandError> {
     let _guard = lock();
-    let agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     match (filter.forge, filter.repo) {
         (None, None) => Ok(agents),
         (Some(forge), Some(repo)) => Ok(agents.into_iter().filter(|agent| agent.runs_on_repo(forge, &repo)).collect()),
@@ -413,7 +409,7 @@ fn reviewable(file: &FileDiff) -> bool {
 }
 
 fn reviewable_paths(change: &ChangeRef) -> Result<Vec<String>, String> {
-    let text = forge::diff(change)?;
+    let text = forge::diff(change).map_err(|e| e.message)?;
     Ok(diff::parse_unified(&text).into_iter().filter(reviewable).map(|file| file.path).collect())
 }
 
@@ -445,7 +441,7 @@ fn scope_preview_command(env: &Env, p: PreviewParams) -> Result<Preview, Command
         AgentSpec::Unsaved { scope, runs_on } => (patterns(scope), runs_on),
         AgentSpec::Saved(id) => {
             let agent = store::load_agents(&env.dir)
-                .map_err(store_err)?
+                .map_err(CommandError::read)?
                 .into_iter()
                 .find(|agent| agent.id == id)
                 .ok_or_else(|| invalid(format!("no agent {id}")))?;
@@ -616,8 +612,8 @@ pub struct Plan {
 }
 
 fn plan_in(env: &Env, source: &Source, options: &Options) -> Result<Plan, CommandError> {
-    let settings = store::load_ai(&env.dir).map_err(store_err)?;
-    let agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let settings = store::load_ai(&env.dir).map_err(CommandError::read)?;
+    let agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     Ok(make_plan(&settings, &agents, source, options))
 }
 
@@ -767,8 +763,8 @@ fn prompt_hash(text: &str) -> String {
 /// [`start_in`], refusing when the prompts that would be sent now are not the ones previewed (`expect`: the `prompt_hash`
 /// of every prompt of an unfiltered `ai.review.preview`).
 pub(crate) fn start_checked(env: &Env, source: &Source, options: &Options, expect: Option<&[String]>) -> Result<Vec<String>, CommandError> {
-    let settings = store::load_ai(&env.dir).map_err(store_err)?;
-    let agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let settings = store::load_ai(&env.dir).map_err(CommandError::read)?;
+    let agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     let (_, prepared) = prepare(&settings, &agents, source, options)?;
     if let Some(expected) = expect {
         let mut fresh: Vec<String> = prepared.iter().filter(|p| p.part.engine.wired()).map(|p| prompt_hash(&p.prompt.text)).collect();
@@ -830,8 +826,8 @@ pub struct ReviewPreview {
 }
 
 fn preview_in(env: &Env, source: &Source, agent: Option<&str>, options: &Options) -> Result<ReviewPreview, CommandError> {
-    let settings = store::load_ai(&env.dir).map_err(store_err)?;
-    let agents = store::load_agents(&env.dir).map_err(store_err)?;
+    let settings = store::load_ai(&env.dir).map_err(CommandError::read)?;
+    let agents = store::load_agents(&env.dir).map_err(CommandError::read)?;
     let (plan, prepared) = prepare(&settings, &agents, source, options)?;
     let picks = |part: &Part| match agent {
         None => true,
@@ -930,11 +926,11 @@ fn begin_run(
             root.status = NodeStatus::Failed;
             root.ended = Some(now);
         }
-        store::create_run(&env.dir, &run).map_err(store_err)?;
+        store::create_run(&env.dir, &run).map_err(CommandError::write)?;
         return Ok(None);
     }
     let job = Job { dir: env.dir.clone(), program: env.program.clone(), run, prompt, files, settings: settings.clone() };
-    runner::launch(job).map(Some).map_err(CommandError::Store)
+    runner::launch(job).map(Some).map_err(CommandError::write)
 }
 
 // ---- runs ----
@@ -1010,7 +1006,7 @@ fn run_list(env: &Env, change: Option<&ChangeRef>) -> RunList {
 }
 
 fn run_get(env: &Env, id: &str) -> Result<Run, CommandError> {
-    let mut run = store::load_run(&env.dir, id).map_err(store_err)?.ok_or_else(|| invalid(format!("no run {id}")))?;
+    let mut run = store::load_run(&env.dir, id).map_err(CommandError::read)?.ok_or_else(|| invalid(format!("no run {id}")))?;
     reconcile(env, &mut run);
     Ok(run)
 }
@@ -1024,8 +1020,8 @@ fn active_run(env: &Env, id: &str) -> Result<Run, CommandError> {
 /// assistant message that had already finished are kept, a message still being written is not. A queued run stops at once.
 fn run_stop(env: &Env, id: &str) -> Result<Run, CommandError> {
     let mut run = active_run(env, id)?;
-    store::send_signal(&env.dir, id, Signal::Stop).map_err(store_err)?;
-    match store::with_run(&env.dir, id, |disk| disk.stopping |= disk.state.is_active()).map_err(store_err)? {
+    store::send_signal(&env.dir, id, Signal::Stop).map_err(CommandError::write)?;
+    match store::with_run(&env.dir, id, |disk| disk.stopping |= disk.state.is_active()).map_err(CommandError::write)? {
         Some((fresh, ())) => Ok(fresh),
         None => {
             run.stopping = true;
@@ -1037,7 +1033,7 @@ fn run_stop(env: &Env, id: &str) -> Result<Run, CommandError> {
 /// `run.kill`: ends the engine process now. The pid is signalled only while it is verified to be this run's engine.
 fn run_kill(env: &Env, id: &str) -> Result<Run, CommandError> {
     let run = active_run(env, id)?;
-    store::send_signal(&env.dir, id, Signal::Kill).map_err(store_err)?;
+    store::send_signal(&env.dir, id, Signal::Kill).map_err(CommandError::write)?;
     if let Some(pid) = run.pid {
         // The supervisor sees the marker too; this reaches an engine whose supervisor is slow or in another process.
         runner::kill_verified(pid, run.pid_start.as_deref());
@@ -1049,8 +1045,8 @@ fn run_kill(env: &Env, id: &str) -> Result<Run, CommandError> {
 fn run_stop_all(env: &Env) -> Result<Value, CommandError> {
     let mut stopped = Vec::new();
     for run in run_list(env, None).runs.into_iter().filter(|run| run.state.is_active()) {
-        store::send_signal(&env.dir, &run.id, Signal::Stop).map_err(store_err)?;
-        store::with_run(&env.dir, &run.id, |disk| disk.stopping |= disk.state.is_active()).map_err(store_err)?;
+        store::send_signal(&env.dir, &run.id, Signal::Stop).map_err(CommandError::write)?;
+        store::with_run(&env.dir, &run.id, |disk| disk.stopping |= disk.state.is_active()).map_err(CommandError::write)?;
         stopped.push(run.id);
     }
     Ok(serde_json::json!({ "stopped": stopped }))
@@ -1105,7 +1101,7 @@ fn settle_draft<T>(
     match changed {
         Ok(Some((_, outcome))) => outcome,
         Ok(None) => Err(invalid(format!("no run {run_id}"))),
-        Err(error) => Err(CommandError::Store(error)),
+        Err(error) => Err(CommandError::write(error)),
     }
 }
 
@@ -1124,17 +1120,14 @@ fn draft_keep(env: &Env, change: &ChangeRef, id: &str) -> Result<Kept, CommandEr
             on_rendered: false,
         };
         // A retry after a failed save of the run finds the draft the first try added, and reuses it instead of adding another.
-        let earlier = store::load_review(&env.dir, change).map_err(store_err)?;
+        let earlier = store::load_review(&env.dir, change).map_err(CommandError::read)?;
         let added = earlier.drafts.iter().find(|draft| draft.path == new.path && draft.end == new.end && draft.body == new.body);
         let (local, draft) = match added {
             Some(draft) if earlier.anchor.as_ref() == Some(&new.anchor) => (earlier.clone(), draft.id),
             _ => {
                 let local = review::draft_add_in(&env.dir, change, new)?;
-                let draft = local
-                    .drafts
-                    .last()
-                    .map(|draft| draft.id)
-                    .ok_or_else(|| CommandError::Store("the draft was added but is not in the review".into()))?;
+                let draft =
+                    local.drafts.last().map(|draft| draft.id).ok_or_else(|| CommandError::write("the draft was added but is not in the review"))?;
                 (local, draft)
             }
         };

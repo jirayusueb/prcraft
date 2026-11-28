@@ -41,12 +41,12 @@ pub fn list(change: &ChangeRef) -> Result<CommitList, CommandError> {
     let read = read.map_err(CommandError::Forge)?;
     let (reviewed, reviewed_error) = match reviewed {
         Ok(reviewed) => (reviewed, None),
-        Err(error) => (None, Some(error)),
+        Err(error) => (None, Some(error.message)),
     };
     Ok(CommitList { change: change.clone(), commits: read.commits, complete: read.complete, reviewed, reviewed_error })
 }
 
-fn reviewed(change: &ChangeRef) -> Result<Option<Reviewed>, String> {
+fn reviewed(change: &ChangeRef) -> Result<Option<Reviewed>, pr_craft_forge::ForgeError> {
     let me = turn_forge::my_login(change.forge, change.host_name())?;
     let Some(snapshot) = turn_forge::snapshot(change, &me)? else { return Ok(None) };
     let review = assess(&snapshot).review;

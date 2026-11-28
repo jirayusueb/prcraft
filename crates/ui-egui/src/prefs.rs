@@ -131,7 +131,7 @@ pub fn reload(ctx: &Context) {
 
 /// `settings.set` with `patch`, then the new settings take effect. The error is the engine's own words.
 pub fn set(ctx: &Context, patch: &Value) -> Result<(), String> {
-    pr_craft_engine::run("settings.set", patch).map_err(|e| e.to_string())?;
+    pr_craft_engine::run("settings.set", patch).map_err(crate::fail)?;
     reload(ctx);
     Ok(())
 }
@@ -139,7 +139,7 @@ pub fn set(ctx: &Context, patch: &Value) -> Result<(), String> {
 /// `keys.rebind`. Returns the reasons a saved binding still carries (another app uses the chord), or the reason it was refused.
 pub fn rebind(ctx: &Context, action: &str, key: &str, modifiers: &[Modifier]) -> Result<Vec<String>, String> {
     let params = json!({ "action": action, "key": key, "modifiers": modifiers });
-    let answer = pr_craft_engine::run("keys.rebind", &params).map_err(|e| e.to_string())?;
+    let answer = pr_craft_engine::run("keys.rebind", &params).map_err(crate::fail)?;
     reload(ctx);
     let warnings = answer["warnings"].as_array().map(|all| all.iter().filter_map(|w| w["reason"].as_str().map(str::to_owned)).collect());
     Ok(warnings.unwrap_or_default())

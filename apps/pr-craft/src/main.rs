@@ -11,6 +11,7 @@ const WINDOW: [f32; 2] = [1440.0, 900.0];
 const WINDOW_MIN: [f32; 2] = [1100.0, 720.0];
 
 fn main() -> ExitCode {
+    pr_craft_engine::log::install();
     let spec = AppSpec::new(APP_ID, TITLE, Defaults::new(WINDOW, WINDOW_MIN));
     match app::run(spec, PrCraftApp::new) {
         Ok(()) => ExitCode::SUCCESS,

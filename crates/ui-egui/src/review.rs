@@ -203,7 +203,7 @@ impl ReviewScreen {
         if let State::Ready(ready) = &mut self.state
             && let Err(error) = ready.submit(ctx)
         {
-            ready.error = Some(error.to_string());
+            ready.error = Some(crate::fail(error));
         }
     }
 
@@ -462,7 +462,7 @@ fn load(ctx: &Context, change: ChangeRef) -> Receiver<Result<ReviewView, String>
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         // The screen may have closed first; nobody is left to tell.
-        let _ = tx.send(engine::open(&change).map_err(|e| e.to_string()));
+        let _ = tx.send(engine::open(&change).map_err(crate::fail));
         ctx.request_repaint();
     });
     rx
@@ -737,12 +737,12 @@ impl Ready {
         let change = view.change.clone();
         let (remembered, error) = match engine_view::views() {
             Ok(saved) => (saved, None),
-            Err(e) => (BTreeMap::new(), Some(format!("Could not read your saved views: {e}"))),
+            Err(e) => (BTreeMap::new(), Some(format!("Could not read your saved views: {}", crate::fail(e)))),
         };
-        let layers = Fetch::start(ctx, move || stacks::list(&change).map_err(|e| e.to_string()));
+        let layers = Fetch::start(ctx, move || stacks::list(&change).map_err(crate::fail));
         let for_threads = view.change.clone();
         let mut ready = Self::with(view, from_back, remembered, error, layers);
-        ready.threads = Fetch::start(ctx, move || thread_engine::list(&for_threads).map_err(|e| e.to_string()));
+        ready.threads = Fetch::start(ctx, move || thread_engine::list(&for_threads).map_err(crate::fail));
         ready
     }
 
@@ -2031,7 +2031,7 @@ impl Ready {
             self.commits.picked = None;
             // The strip already read the layers; the diff does not list open changes again.
             let (change, layers) = (self.view.change.clone(), self.layers().to_vec());
-            self.whole = Fetch::start(ctx, move || stacks::whole_of(&change, layers).map_err(|e| e.to_string()));
+            self.whole = Fetch::start(ctx, move || stacks::whole_of(&change, layers).map_err(crate::fail));
         }
     }
 
@@ -2045,7 +2045,7 @@ impl Ready {
             self.commits.range = Fetch::Idle;
             self.commits.picked = None;
             let change = self.view.change.clone();
-            self.since = Fetch::start(ctx, move || turn::since_last(&change).map_err(|e| e.to_string()));
+            self.since = Fetch::start(ctx, move || turn::since_last(&change).map_err(crate::fail));
         }
     }
 
@@ -2208,7 +2208,7 @@ impl Ready {
         let (tx, rx) = mpsc::channel();
         let (ctx, change) = (ctx.clone(), self.view.change.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(turn::hand_off(&change, &to).map_err(|e| e.to_string()));
+            let _ = tx.send(turn::hand_off(&change, &to).map_err(crate::fail));
             ctx.request_repaint();
         });
         self.handing = Some(rx);
@@ -2622,7 +2622,7 @@ impl Ready {
                 }
             };
             if let Err(error) = result {
-                self.error = Some(error.to_string());
+                self.error = Some(crate::fail(error));
             }
         }
         Outcome::Stay
@@ -2695,7 +2695,7 @@ impl Ready {
         let (tx, rx) = mpsc::channel();
         let (ctx, change) = (ctx.clone(), self.view.change.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(engine::submit(&change, confirmed).map_err(|e| e.to_string()));
+            let _ = tx.send(engine::submit(&change, confirmed).map_err(crate::fail));
             ctx.request_repaint();
         });
         self.submitting = Some(rx);
@@ -2806,8 +2806,7 @@ impl Ready {
             let reveal = self.reveals.get(&file).and_then(|r| r.get(gap)).cloned().unwrap_or_default();
             let Some((from, to)) = context::plan(at, &reveal, kind) else { continue };
             let (change, meta, path) = (self.view.change.clone(), self.view.meta.clone(), f.path.clone());
-            let fetch =
-                Fetch::start(ctx, move || engine::expand_at(&change, &meta, &path, engine_view::Side::Head, from, to).map_err(|e| e.to_string()));
+            let fetch = Fetch::start(ctx, move || engine::expand_at(&change, &meta, &path, engine_view::Side::Head, from, to).map_err(crate::fail));
             self.expanding = Some(Expanding { file, gap, kind, fetch });
         }
     }
@@ -2848,7 +2847,7 @@ impl Ready {
     /// Starts reading the change's commits.
     fn start_commits(&mut self, ctx: &Context) {
         let change = self.view.change.clone();
-        self.commits.list = Fetch::start(ctx, move || commits_engine::list(&change).map_err(|e| e.to_string()));
+        self.commits.list = Fetch::start(ctx, move || commits_engine::list(&change).map_err(crate::fail));
     }
 
     fn commit_act(&mut self, ctx: &Context, act: CommitAct) {
@@ -2932,7 +2931,7 @@ impl Ready {
         match bounds {
             Ok((from, to)) => {
                 let change = self.view.change.clone();
-                self.commits.range = Fetch::start(ctx, move || commits_engine::range(&change, &from, &to).map_err(|e| e.to_string()));
+                self.commits.range = Fetch::start(ctx, move || commits_engine::range(&change, &from, &to).map_err(crate::fail));
             }
             Err(error) => {
                 self.commits.picked = None;
@@ -3195,7 +3194,7 @@ impl Ready {
         let (tx, rx) = mpsc::channel();
         let (ctx, change, id) = (ctx.clone(), self.view.change.clone(), thread.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(job(&change, &id).map_err(|e| e.to_string()));
+            let _ = tx.send(job(&change, &id).map_err(crate::fail));
             ctx.request_repaint();
         });
         self.writing = Some(ThreadWrite { rx, thread, reply });
@@ -3218,7 +3217,7 @@ impl Ready {
                 }
                 self.notice = Some(done);
                 let change = self.view.change.clone();
-                self.threads = Fetch::start(ctx, move || thread_engine::list(&change).map_err(|e| e.to_string()));
+                self.threads = Fetch::start(ctx, move || thread_engine::list(&change).map_err(crate::fail));
             }
             // The typed reply stays in its field.
             Err(error) => self.error = Some(error),
