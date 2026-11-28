@@ -67,6 +67,7 @@ pub(crate) fn tab(page: &str) -> Option<settings::Tab> {
         "keyboard" => Tab::Keyboard,
         "sync" => Tab::Sync,
         "permissions" => Tab::Permissions,
+        "about" => Tab::About,
         _ => return None,
     })
 }

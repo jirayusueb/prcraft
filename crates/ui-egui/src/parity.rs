@@ -918,6 +918,15 @@ fn offline_and_sync_offers_copy_diagnostics_by_name() {
 }
 
 #[test]
+fn about_offers_the_update_check_and_lists_the_known_limits_by_name() {
+    let harness = harness(settings_app(Tab::About), 1440.0, 900.0);
+    assert!(named(&harness, Role::Button, "Check for updates"), "the update check is a named button");
+    for text in ["Known limits", "Markdown tables show as text", "Updates are not installed for you"] {
+        harness.get_by_label_contains(text);
+    }
+}
+
+#[test]
 fn tab_moves_from_cancel_to_check_out_here_in_the_confirm_step() {
     let mut confirm = harness(local_app(LocalCase::Confirm), 1440.0, 900.0);
     confirm.run();
