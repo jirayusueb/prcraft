@@ -85,6 +85,8 @@ pub struct Settings {
     pub poll_minutes: u32,
     pub slower_on_battery: bool,
     pub if_changed_offline: IfChanged,
+    /// Post a macOS banner for each new notification.
+    pub banners: bool,
     /// Where "Check out in a worktree" puts one folder per change. Empty until the user picks one.
     pub checkouts_root: String,
     /// The local clone of each repository, by [`crate::checkout::clone_key`]. Only folders the user named are ever read.
@@ -112,6 +114,7 @@ impl Default for Settings {
             poll_minutes: 5,
             slower_on_battery: true,
             if_changed_offline: IfChanged::Ask,
+            banners: true,
             checkouts_root: String::new(),
             clones: BTreeMap::new(),
             extra: Extra::default(),

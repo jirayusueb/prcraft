@@ -192,6 +192,8 @@ pub struct NotifyState {
     // shortcut: ids are kept for good, about 100 bytes per event; prune them when the file outgrows a few hundred KB.
     pub seen: BTreeSet<String>,
     pub pause: Option<Pause>,
+    /// Events that got a macOS banner, posted or failed, so none gets a second one.
+    pub bannered: BTreeSet<String>,
     #[serde(flatten, default)]
     pub extra: Extra,
 }
