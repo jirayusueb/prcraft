@@ -197,6 +197,7 @@ fn review_screen_with(from_back: bool, inline: bool) -> (ReviewScreen, Runs) {
         head_sha: "abc".into(),
         base_sha: None,
         diff_refs: None,
+        finished: false,
     };
     let view = ReviewView { change: change.clone(), meta, anchor, stale: false, files, local, filter: Vec::new(), layout: Default::default() };
     let mut suggestion = run("r", 1293, RunState::Done, Utc::now() - Duration::minutes(3));
@@ -521,6 +522,7 @@ pub(crate) fn retry_view() -> ReviewView {
         head_sha: "abc".into(),
         base_sha: None,
         diff_refs: None,
+        finished: false,
     };
     ReviewView { change, meta, anchor, stale: false, files, local, filter: Vec::new(), layout: Default::default() }
 }
@@ -612,6 +614,7 @@ fn svg_app() -> PrCraftApp {
         head_sha: "abc".into(),
         base_sha: None,
         diff_refs: None,
+        finished: false,
     };
     let view = ReviewView { change, meta, anchor, stale: false, files, local, filter: Vec::new(), layout: Default::default() };
     let screen = ReviewScreen::fixture(view, Vec::new(), false).with_svg("src/icons/retry.svg", RETRY_SVG_OLD, RETRY_SVG_NEW);

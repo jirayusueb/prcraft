@@ -705,7 +705,7 @@ impl Ready {
         }
         let target = self.open_target();
         let mut asked = Vec::new();
-        let shown = self.local.popover(ctx, &self.view.change, target.as_ref(), &mut asked);
+        let shown = self.local.popover(ctx, &self.view.change, target.as_ref(), self.view.meta.finished, &mut asked);
         acts.extend(asked.into_iter().map(Act::Local));
         // A press anywhere else closes it, unless it is the confirm step; a press on the control that opened it is that control's.
         let trigger = self.local.trigger.get();

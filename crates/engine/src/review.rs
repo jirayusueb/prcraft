@@ -548,6 +548,7 @@ mod tests {
             head_sha: "h2".into(),
             base_sha: None,
             diff_refs: Some(refs),
+            finished: false,
         };
         let written = Anchor { head_sha: "h1".into(), base_sha: Some("b1".into()), start_sha: Some("s1".into()) };
         let posted = anchored(meta, Some(&written));

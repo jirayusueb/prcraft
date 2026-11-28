@@ -1,5 +1,5 @@
 //! Open locally (Figma frame 96): check the change out in a worktree or in the clone the user named, and open the file at the
-//! line in an editor. Each choice is an engine command (`checkout.status`, `checkout.worktree`, `checkout.here`, `open.editor`);
+//! line in an editor. Each choice is an engine command (`checkout.status`, `checkout.worktree`, `checkout.remove`, `checkout.here`, `open.editor`);
 //! this screen draws what they answer, and every refusal in the engine's own words.
 
 use std::cell::Cell;
@@ -19,6 +19,8 @@ use crate::theme;
 pub(crate) enum LocalAct {
     Toggle,
     Worktree,
+    /// "Remove the worktree", offered once the change is merged or closed.
+    Remove,
     /// "Check out here": asks first.
     AskHere,
     ConfirmHere,
@@ -135,6 +137,14 @@ impl Local {
                     })
                 });
             }
+            LocalAct::Remove => {
+                self.said = None;
+                let change = change.clone();
+                self.work = Fetch::start(ctx, move || {
+                    let done = local::remove(&change).map_err(crate::fail)?;
+                    Ok(format!("Removed the worktree at {}.", tilde(&done.removed)))
+                });
+            }
             LocalAct::AskHere => self.ask_here(),
             LocalAct::ConfirmHere => {
                 let Some(confirm) = self.confirm.take() else { return };
@@ -202,7 +212,7 @@ impl Local {
     }
 
     /// The popover under the Open control: the choices, each with the command that runs, and the answer of the last one.
-    pub(crate) fn popover(&self, ctx: &Context, change: &ChangeRef, target: Option<&Target>, acts: &mut Vec<LocalAct>) -> Rect {
+    pub(crate) fn popover(&self, ctx: &Context, change: &ChangeRef, target: Option<&Target>, finished: bool, acts: &mut Vec<LocalAct>) -> Rect {
         let (screen, p) = (ctx.content_rect(), theme::pal(ctx));
         let anchor = self.trigger.get().map_or(egui::pos2(screen.right() - 16.0, 44.0), |t| egui::pos2(t.right(), t.bottom() + 4.0));
         let area = egui::Area::new(egui::Id::NULL.with("open-locally"))
@@ -221,7 +231,7 @@ impl Local {
                     ui.add_space(theme::SPACE_2);
                     match &self.confirm {
                         Some(confirm) => self.confirm_step(ui, confirm, acts),
-                        None => self.choices(ui, target, acts),
+                        None => self.choices(ui, target, finished, acts),
                     }
                     self.answer(ui);
                 });
@@ -235,7 +245,7 @@ impl Local {
         });
     }
 
-    fn choices(&self, ui: &mut Ui, target: Option<&Target>, acts: &mut Vec<LocalAct>) {
+    fn choices(&self, ui: &mut Ui, target: Option<&Target>, finished: bool, acts: &mut Vec<LocalAct>) {
         let p = theme::pal(ui);
         let status = match &self.status {
             Fetch::Ready(status) => status,
@@ -252,6 +262,11 @@ impl Local {
             .clicked()
         {
             acts.push(LocalAct::Worktree);
+        }
+        if let Some(path) = status.worktree.as_ref().filter(|_| finished)
+            && components::local_row(ui, "Remove the worktree", &tilde(path), "", false, true).clicked()
+        {
+            acts.push(LocalAct::Remove);
         }
         let here_line = match (&status.clone, &status.head_branch, status.here_action.why_not.as_deref()) {
             (_, _, Some(why)) => why.to_string(),
@@ -423,5 +438,35 @@ mod tests {
         let mut no_line = Local::fixture(status(Action::yes(), Some("/c/acme-api-7")), None);
         no_line.act(&ctx, &change(), LocalAct::Editor(Editor::Zed), None);
         assert!(!no_line.busy() && matches!(&no_line.said, Some(Err(why)) if why.contains("Select a changed line")));
+    }
+
+    #[test]
+    fn remove_the_worktree_is_named_for_a_finished_change_with_a_worktree_and_absent_for_an_open_one() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{By, NodeT, Queryable};
+        let named = |worktree: Option<&str>, finished: bool| {
+            let mut made = status(Action::yes(), None);
+            made.worktree = worktree.map(str::to_string);
+            let local = Local::fixture(made, None);
+            let mut ready = false;
+            let mut harness = Harness::builder().with_size(egui::vec2(600.0, 500.0)).build_ui(move |ui| {
+                if !ready {
+                    crate::prefs::install_defaults(ui.ctx());
+                    let look = theme::Look::default();
+                    theme::install(ui.ctx(), look);
+                    theme::apply_style(ui.ctx(), &look);
+                    crate::fonts::install_blocking(ui.ctx(), &pr_craft_core::settings::Settings::default());
+                    ready = true;
+                }
+                local.popover(ui.ctx(), &change(), None, finished, &mut Vec::new());
+            });
+            harness.run();
+            harness
+                .query_all(By::new().role(egui::accesskit::Role::Button))
+                .any(|n| n.accesskit_node().label().is_some_and(|name| name.starts_with("Remove the worktree. /c/acme-api-7")))
+        };
+        assert!(named(Some("/c/acme-api-7"), true), "merged or closed, with a worktree");
+        assert!(!named(Some("/c/acme-api-7"), false), "an open change keeps it quiet");
+        assert!(!named(None, true), "nothing to remove");
     }
 }

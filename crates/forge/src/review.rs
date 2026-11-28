@@ -23,6 +23,9 @@ pub struct ChangeMeta {
     pub base_sha: Option<String>,
     /// GitLab anchors discussions to these three; `None` on GitHub.
     pub diff_refs: Option<GitLabDiffRefs>,
+    /// The change was merged or closed: its worktree is no longer needed.
+    #[serde(default)]
+    pub finished: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +40,7 @@ pub fn change_meta(change: &ChangeRef) -> Result<ChangeMeta, crate::ForgeError> 
     match change.forge {
         Forge::GitHub => {
             let number = change.number.to_string();
-            let fields = "title,author,url,headRefName,baseRefName,headRefOid,baseRefOid";
+            let fields = "title,author,url,headRefName,baseRefName,headRefOid,baseRefOid,state";
             let host = change.host_name();
             let (mut meta, tip) = parse_github_meta(&run_on(host, "gh", &["pr", "view", &number, "-R", &change.repo, "--json", fields])?)?;
             // The base branch may have moved on since the branch left it; the diff's old side is the merge-base. If
@@ -182,6 +185,8 @@ struct GitHubMeta {
     base_ref_name: String,
     head_ref_oid: String,
     base_ref_oid: String,
+    #[serde(default)]
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -201,6 +206,7 @@ fn parse_github_meta(bytes: &[u8]) -> Result<(ChangeMeta, String), crate::ForgeE
         head_sha: pr.head_ref_oid,
         base_sha: None,
         diff_refs: None,
+        finished: matches!(pr.state.as_str(), "MERGED" | "CLOSED"),
     };
     Ok((meta, pr.base_ref_oid))
 }
@@ -214,6 +220,8 @@ struct GitLabMeta {
     target_branch: String,
     sha: String,
     diff_refs: Option<GitLabDiffRefs>,
+    #[serde(default)]
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -231,6 +239,7 @@ fn parse_gitlab_meta(bytes: &[u8]) -> Result<ChangeMeta, crate::ForgeError> {
         base_branch: mr.target_branch,
         head_sha: mr.sha,
         base_sha: mr.diff_refs.as_ref().map(|refs| refs.base_sha.clone()),
+        finished: matches!(mr.state.as_str(), "merged" | "closed"),
         diff_refs: mr.diff_refs,
     })
 }
@@ -249,6 +258,7 @@ mod tests {
             head_sha: "headsha".into(),
             base_sha: None,
             diff_refs,
+            finished: false,
         }
     }
 
@@ -268,13 +278,14 @@ mod tests {
     #[test]
     fn github_view_output_becomes_meta() {
         let json = br#"{"author":{"id":"U_1","is_bot":false,"login":"nina.k","name":"Nina"},"baseRefName":"main",
-            "headRefName":"retry-webhooks","headRefOid":"9f2c1a","baseRefOid":"b4a3c2","title":"Retry webhooks","url":"https://github.com/acme/api/pull/482"}"#;
+            "headRefName":"retry-webhooks","headRefOid":"9f2c1a","baseRefOid":"b4a3c2","title":"Retry webhooks","url":"https://github.com/acme/api/pull/482","state":"MERGED"}"#;
         let (meta, tip) = parse_github_meta(json).expect("gh output parses");
         assert_eq!((meta.author.as_str(), meta.head_branch.as_str(), meta.base_branch.as_str()), ("nina.k", "retry-webhooks", "main"));
         assert_eq!(meta.head_sha, "9f2c1a");
         assert_eq!(tip, "b4a3c2", "the base branch tip is kept to ask for the merge-base");
         assert_eq!(meta.base_sha, None, "the merge-base is not the tip");
         assert_eq!(meta.diff_refs, None);
+        assert!(meta.finished, "a merged change is finished");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! `checkout.status`, `checkout.worktree`, `checkout.here` and `open.editor`: a change on this Mac, in the clones the user named
+//! `checkout.status`, `checkout.worktree`, `checkout.remove`, `checkout.here` and `open.editor`: a change on this Mac, in the clones the user named
 //! in Settings. Nothing outside those folders and the checkouts folder is read or written, and nothing here stashes, resets,
 //! cleans or forces: a clone that is not safe to switch is left as it is, with the reason.
 
@@ -528,10 +528,57 @@ fn worktree_with(
     Ok(Worktree { path: target.display().to_string(), reused: false, other_commit: false, head: Some(head) })
 }
 
+/// `checkout.remove`.
+pub fn remove(change: &ChangeRef) -> Result<Removed, CommandError> {
+    remove_in(&settings::load()?, change).map_err(invalid)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Removed {
+    pub removed: String,
+}
+
+/// Removes the worktree PR Craft made for the change, and the private ref it was made from. It refuses a worktree that holds
+/// work (changed, staged or untracked files), a folder that is not a worktree of the registered clone, and the clone itself; the
+/// removal never forces.
+pub fn remove_in(saved: &Settings, change: &ChangeRef) -> Result<Removed, String> {
+    let _busy = lock()?;
+    let path = saved.clones.get(&checkout::change_key(change)).ok_or_else(|| setup(change))?;
+    let clone = clone_root(path)?;
+    if saved.checkouts_root.is_empty() {
+        return Err(NO_ROOT.into());
+    }
+    let target = Path::new(&saved.checkouts_root).join(checkout::worktree_dir(change));
+    if !exists(&target) {
+        return Err(format!("PR Craft has no worktree for this change at {}.", target.display()));
+    }
+    if target.canonicalize().ok().as_deref() == Some(clone.as_path()) {
+        return Err(format!("{} is the main checkout of {path}, not a worktree PR Craft made; it is not removed.", target.display()));
+    }
+    if !is_worktree(&clone, &target) {
+        return Err(format!("{} is not a worktree of {path}, so PR Craft will not remove it.", target.display()));
+    }
+    let out = git(&target, &["status", "--porcelain", "-z"])?;
+    let held: Vec<&str> = out.split('\0').filter(|e| !e.is_empty()).map(|e| e.get(3..).unwrap_or(e)).collect();
+    if !held.is_empty() {
+        return Err(format!(
+            "The worktree {} holds uncommitted work ({}), so PR Craft will not remove it. Commit or discard it with git first.",
+            target.display(),
+            held.iter().take(3).copied().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let target_arg = target.to_string_lossy();
+    git_for(&clone, &["worktree", "remove", "--", &target_arg], FETCH)?;
+    git(&clone, &["worktree", "prune"])?;
+    // The ref only exists when this clone fetched the head for a worktree or a status; a missing one is not a failure.
+    let _ = git(&clone, &["update-ref", "-d", &private_ref(change)]);
+    Ok(Removed { removed: target.display().to_string() })
+}
+
 /// Why a worktree with `changes` is not handed back as the change's checkout.
 fn unclean_reason(target: &Path, changes: &[String]) -> String {
     format!(
-        "The worktree {} is not clean ({}), so PR Craft will not hand it back as the change's checkout. Look at it with git, or remove it with `git worktree remove` and try again.",
+        "The worktree {} is not clean ({}), so PR Craft will not hand it back as the change's checkout. Look at it with git, or remove it with `git worktree remove` and try again. Once the change is merged or closed, Open locally offers \"Remove the worktree\".",
         target.display(),
         changes.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
     )
@@ -1132,6 +1179,44 @@ mod tests {
         let refused = f.here(&evil, true, &ran).expect_err("refused");
         assert!(refused.contains("branch"), "{refused}");
         assert_eq!(ran.get(), 0);
+    }
+
+    #[test]
+    fn remove_deletes_a_clean_worktree_and_refuses_one_that_holds_work() {
+        let f = fixture();
+        let made = worktree_in(&f.saved, &f.change, &f.incoming.head).expect("worktree");
+        let dir = Path::new(&made.path);
+        fs::write(dir.join("scratch.txt"), "mine\n").expect("untracked file");
+        let refused = remove_in(&f.saved, &f.change).expect_err("an untracked file is work");
+        assert!(refused.contains("scratch.txt") && refused.contains("uncommitted"), "{refused}");
+        fs::remove_file(dir.join("scratch.txt")).expect("rm");
+        fs::write(dir.join("feature.txt"), "edited\n").expect("tracked edit");
+        let refused = remove_in(&f.saved, &f.change).expect_err("a tracked edit is work");
+        assert!(refused.contains("feature.txt"), "{refused}");
+        assert!(dir.is_dir(), "a refusal leaves it");
+        sh(dir, &["checkout", "--", "feature.txt"]);
+        let done = remove_in(&f.saved, &f.change).expect("a clean worktree goes");
+        assert_eq!(done.removed, made.path);
+        assert!(!dir.exists());
+        assert!(!sh(&f.work, &["worktree", "list", "--porcelain"]).contains("acme-api-7"));
+        assert!(git(&f.work, &["rev-parse", "--verify", "--quiet", &private_ref(&f.change)]).is_err(), "the private ref is gone");
+        assert!(remove_in(&f.saved, &f.change).expect_err("nothing left").contains("no worktree"));
+    }
+
+    #[test]
+    fn remove_refuses_a_folder_that_is_not_a_worktree_and_the_main_checkout() {
+        let f = fixture();
+        let target = Path::new(&f.saved.checkouts_root).join(checkout::worktree_dir(&f.change));
+        fs::create_dir_all(&target).expect("folder");
+        sh(&target, &["init", "-b", "main"]);
+        let refused = remove_in(&f.saved, &f.change).expect_err("a repository of its own is not a worktree of the clone");
+        assert!(refused.contains("not a worktree"), "{refused}");
+        assert!(target.join(".git").exists());
+        let mut main = f.saved.clone();
+        main.clones.insert("gh:acme/api".into(), target.display().to_string());
+        let refused = remove_in(&main, &f.change).expect_err("the clone itself");
+        assert!(refused.contains("main checkout"), "{refused}");
+        assert!(target.join(".git").exists());
     }
 
     #[test]

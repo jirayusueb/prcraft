@@ -76,6 +76,7 @@ const BASE: &[&str] = &[
     "review.range",
     "checkout.status",
     "checkout.worktree",
+    "checkout.remove",
     "checkout.here",
     "open.editor",
 ];
@@ -470,6 +471,7 @@ fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
         }
         "checkout.status" => Ok(serde_json::to_value(local::status(&params::<On>(value)?.change)?)?),
         "checkout.worktree" => Ok(serde_json::to_value(local::worktree(&params::<On>(value)?.change)?)?),
+        "checkout.remove" => Ok(serde_json::to_value(local::remove(&params::<On>(value)?.change)?)?),
         "checkout.here" => {
             let p: CheckoutHere = params(value)?;
             Ok(serde_json::to_value(local::here(&p.change, p.confirm, p.branch.as_deref())?)?)
