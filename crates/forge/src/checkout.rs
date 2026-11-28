@@ -50,7 +50,7 @@ pub fn checkout_args(change: &ChangeRef) -> Vec<String> {
 
 /// The command as it will run in `dir`, pinned to the host the clone was matched on: `GH_HOST` for gh, `GITLAB_HOST` for glab, so
 /// a different default host in the user's environment cannot send the checkout to another server's repository of the same name.
-pub fn checkout_command(change: &ChangeRef, dir: &Path) -> Result<Command, String> {
+pub fn checkout_command(change: &ChangeRef, dir: &Path) -> Result<Command, crate::ForgeError> {
     let hooks_off = no_hooks().ok_or(NO_ROOM_FOR_HOOKS)?;
     let mut command = command(change.host_name(), change.forge.cli());
     if change.forge == Forge::GitHub {
@@ -61,16 +61,18 @@ pub fn checkout_command(change: &ChangeRef, dir: &Path) -> Result<Command, Strin
 }
 
 /// Checks the change out in the clone at `dir`. Never answers a prompt: a login or a choice the CLI wants fails the call.
-pub fn checkout_in(change: &ChangeRef, dir: &Path) -> Result<(), String> {
+pub fn checkout_in(change: &ChangeRef, dir: &Path) -> Result<(), crate::ForgeError> {
     if !valid_repo(&change.repo) {
-        return Err(format!("`{}` is not a repository path PR Craft will pass to {}", change.repo, change.forge.cli()));
+        return Err(format!("`{}` is not a repository path PR Craft will pass to {}", change.repo, change.forge.cli()).into());
     }
     let cli = change.forge.cli();
-    let out = bounded::run(&mut checkout_command(change, dir)?, LIMIT).map_err(|e| format!("{cli} could not run: {e}"))?;
+    let out =
+        bounded::run(&mut checkout_command(change, dir)?, LIMIT).map_err(|e| crate::ForgeError::spawn(&e, format!("{cli} could not run: {e}")))?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(format!("`{cli} {}` failed: {}", checkout_args(change).join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(crate::ForgeError::exited(format!("`{cli} {}` failed: {}", checkout_args(change).join(" "), stderr.trim()), &stderr))
     }
 }
 
@@ -126,6 +128,6 @@ mod tests {
     fn a_repository_name_that_could_be_a_flag_is_never_run() {
         let evil = change(Forge::GitHub, "--exec=sh/x", None);
         let error = checkout_in(&evil, Path::new("/nonexistent")).expect_err("refused before any process starts");
-        assert!(error.contains("not a repository path"), "{error}");
+        assert!(error.message.contains("not a repository path"), "{error}");
     }
 }

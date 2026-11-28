@@ -45,11 +45,12 @@ fn share_save(params: &Value) -> Result<Value, String> {
 fn run(id: &str, params: &Value) -> Result<Value, String> {
     match id {
         "share.save" => share_save(params),
-        _ => pr_craft_engine::run(id, params).map_err(|e| e.to_string()),
+        _ => pr_craft_engine::run(id, params).map_err(|e| format!("{e} ({})", e.code())),
     }
 }
 
 fn main() -> ExitCode {
+    pr_craft_engine::log::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(id) = args.first() else {
         eprintln!("usage: pr-craft-cli <command> [params-json]\ncommands: {}", pr_craft_engine::COMMANDS.join(", "));

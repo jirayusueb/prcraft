@@ -1561,7 +1561,7 @@ impl PrCraftApp {
     fn copy_markdown(&mut self, ctx: &Context) {
         let Some(screen) = &self.review else { return };
         let (change, title) = screen.subject();
-        let copied = pr_craft_engine::review::markdown(change, title).map_err(|e| e.to_string());
+        let copied = pr_craft_engine::review::markdown(change, title).map_err(crate::fail);
         self.runs.status = Some(copied.map(|text| {
             ctx.copy_text(text);
             "Copied the review as Markdown.".to_string()
@@ -1709,6 +1709,11 @@ fn stack_model<'a>(members: &[&'a Change], now: DateTime<Utc>, selected: bool) -
         selected,
         unread: true,
     }
+}
+
+/// What the window says of a failed engine command: its message and the code a report can quote.
+pub(crate) fn fail(error: pr_craft_engine::CommandError) -> String {
+    format!("{error} ({})", error.code())
 }
 
 /// A status line that arrives while focus sits elsewhere: a polite live region (rule 21).

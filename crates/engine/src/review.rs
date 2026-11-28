@@ -8,6 +8,7 @@ use pr_craft_core::diff::{self, FileDiff};
 use pr_craft_core::diff_view::LayoutOptions;
 use pr_craft_core::review::{Anchor, Draft, LineRef, LocalReview, Verdict};
 use pr_craft_core::{ChangeRef, Forge};
+use pr_craft_forge::ForgeError;
 use pr_craft_forge::review::{self as forge, ChangeMeta};
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +55,7 @@ pub struct NewDraft {
 
 /// `review.open`: fetches the change and its diff, both at once. Blocks on the CLI.
 pub fn open(change: &ChangeRef) -> Result<ReviewView, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let (meta, text) = std::thread::scope(|scope| {
         let meta = scope.spawn(|| forge::change_meta(change));
         let text = forge::diff(change);
@@ -67,8 +68,8 @@ pub fn open(change: &ChangeRef) -> Result<ReviewView, CommandError> {
         local.viewed.retain(|path, hash| files.iter().any(|file| &file.path == path && file.hash == *hash));
         Ok(())
     })?;
-    let filter = store::load_filter(&dir, change.forge, change.host.as_deref(), &change.repo).map_err(CommandError::Store)?;
-    let layout = store::load_layout(&dir, change.forge, change.host.as_deref(), &change.repo).map_err(CommandError::Store)?;
+    let filter = store::load_filter(&dir, change.forge, change.host.as_deref(), &change.repo).map_err(CommandError::read)?;
+    let layout = store::load_layout(&dir, change.forge, change.host.as_deref(), &change.repo).map_err(CommandError::read)?;
     let anchor = anchor_of(&meta);
     let stale = local.anchor.as_ref().is_some_and(|written| *written != anchor);
     Ok(ReviewView { change: change.clone(), meta, anchor, stale, files, local, filter, layout })
@@ -77,9 +78,9 @@ pub fn open(change: &ChangeRef) -> Result<ReviewView, CommandError> {
 /// `review.set_layout`: saves the diff options of one repository (on `host`; `None` is the forge's default) and returns
 /// them. The window is not known here, so a `split` the window is too narrow for is kept: the screen decides whether it fits.
 pub fn set_layout(forge: Forge, host: Option<&str>, repo: &str, options: LayoutOptions) -> Result<LayoutOptions, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = lock()?;
-    store::save_layout(&dir, forge, host, repo, options.clone()).map_err(CommandError::Store)?;
+    store::save_layout(&dir, forge, host, repo, options.clone()).map_err(CommandError::write)?;
     Ok(options)
 }
 
@@ -127,9 +128,9 @@ fn lines_of(path: &str, side: view::Side, text: &str, from: u32, to: u32) -> Res
 
 /// `review.local`: the review as it is on this Mac now.
 pub fn local(change: &ChangeRef) -> Result<LocalReview, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = lock()?;
-    store::load_review(&dir, change).map_err(CommandError::Store)
+    store::load_review(&dir, change).map_err(CommandError::read)
 }
 
 pub use crate::store::Pending;
@@ -144,7 +145,7 @@ pub struct DraftsAll {
 /// `review.drafts_all`: the changes that have local drafts, a pending verdict or comment, or a post that may have gone through,
 /// newest edit first. Reads the `reviews/` folder only; no forge is asked.
 pub fn drafts_all() -> Result<DraftsAll, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     // No lock: a review is saved by writing a temp file and renaming it over the old one, so a read sees the old file or the
     // new one, never half of one, and a long walk never holds back a save.
     let (changes, unreadable) = store::list_pending(&dir);
@@ -164,15 +165,15 @@ pub fn mark_viewed(change: &ChangeRef, path: &str, hash: Option<u64>) -> Result<
 
 /// `review.filter`: saves include and exclude patterns for one repository (on `host`). An empty list clears them.
 pub fn save_filter(forge: Forge, host: Option<&str>, repo: &str, patterns: Vec<String>) -> Result<(), CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let patterns = patterns.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
     let _guard = lock()?;
-    store::save_filter(&dir, forge, host, repo, patterns).map_err(CommandError::Store)
+    store::save_filter(&dir, forge, host, repo, patterns).map_err(CommandError::write)
 }
 
 /// `draft.add`. Every draft of one review belongs to one commit, so all of them post together.
 pub fn draft_add(change: &ChangeRef, new: NewDraft) -> Result<LocalReview, CommandError> {
-    draft_add_in(&store::data_dir().map_err(CommandError::Store)?, change, new)
+    draft_add_in(&store::data_dir().map_err(CommandError::read)?, change, new)
 }
 
 /// [`draft_add`] on the review files in `dir`; `draft.keep` takes this path so the anchor rules apply to AI drafts too.
@@ -240,8 +241,8 @@ pub fn submit(change: &ChangeRef, confirm_unknown: bool) -> Result<LocalReview, 
     let sent = local(change)?;
     check_postable(change.forge, &sent)?;
     check_unknown_confirmed(change, &sent, confirm_unknown)?;
-    let dir = store::data_dir().map_err(CommandError::Store)?;
-    let kept = |error: String| failed_post(&dir, change, error);
+    let dir = store::data_dir().map_err(CommandError::read)?;
+    let kept = |error: ForgeError| failed_post(&dir, change, error);
     let meta = forge::change_meta(change).map_err(kept)?;
     let meta = anchored(meta, sent.anchor.as_ref());
     match change.forge {
@@ -297,11 +298,14 @@ fn check_unknown_confirmed(change: &ChangeRef, sent: &LocalReview, confirm_unkno
 
 /// What a failed post leaves: a post that ran out of time flags the review (and keeps all of it, to be posted only when the reader
 /// says so); any other failure just keeps what did not post.
-fn failed_post(dir: &Path, change: &ChangeRef, error: String) -> CommandError {
+fn failed_post(dir: &Path, change: &ChangeRef, error: ForgeError) -> CommandError {
     if !pr_craft_forge::outcome_unknown(&error) {
-        return CommandError::Forge(format!("{error}. What did not post is kept on this Mac; submitting again sends only that."));
+        return CommandError::Forge(ForgeError::new(
+            error.kind,
+            format!("{}. What did not post is kept on this Mac; submitting again sends only that.", error.message),
+        ));
     }
-    let said = error.clone();
+    let said = error.message.clone();
     let flagged = edit_in(dir, change, |local| {
         local.post_unknown = Some(said);
         Ok(())
@@ -310,7 +314,7 @@ fn failed_post(dir: &Path, change: &ChangeRef, error: String) -> CommandError {
         Ok(_) => "Your comments are kept on this Mac, and the next Submit asks you to confirm first.".to_string(),
         Err(why) => format!("Your comments are kept on this Mac, but the review could not be marked: {why}"),
     };
-    CommandError::Forge(format!("{error} {note}"))
+    CommandError::Forge(ForgeError::new(error.kind, format!("{error} {note}")))
 }
 
 /// What a finished post clears: the parts that went, and the flag, because the post now has a known outcome.
@@ -383,16 +387,16 @@ fn non_empty(body: String) -> Result<String, CommandError> {
 }
 
 pub(crate) fn lock() -> Result<std::sync::MutexGuard<'static, ()>, CommandError> {
-    STORE.lock().map_err(|_| CommandError::Store("an earlier save crashed; restart PR Craft".into()))
+    STORE.lock().map_err(|_| CommandError::write("an earlier save crashed; restart PR Craft"))
 }
 
 fn edit(change: &ChangeRef, apply: impl FnOnce(&mut LocalReview) -> Result<(), CommandError>) -> Result<LocalReview, CommandError> {
-    edit_in(&store::data_dir().map_err(CommandError::Store)?, change, apply)
+    edit_in(&store::data_dir().map_err(CommandError::read)?, change, apply)
 }
 
 fn edit_in(dir: &Path, change: &ChangeRef, apply: impl FnOnce(&mut LocalReview) -> Result<(), CommandError>) -> Result<LocalReview, CommandError> {
     let _guard = lock()?;
-    let mut local = store::load_review(dir, change).map_err(CommandError::Store)?;
+    let mut local = store::load_review(dir, change).map_err(CommandError::read)?;
     let before = local.clone();
     apply(&mut local)?;
     // With nothing left to post, an unknown outcome has nothing left to ask about.
@@ -400,7 +404,7 @@ fn edit_in(dir: &Path, change: &ChangeRef, apply: impl FnOnce(&mut LocalReview) 
         local.post_unknown = None;
     }
     if local != before {
-        store::save_review(dir, change, &local).map_err(CommandError::Store)?;
+        store::save_review(dir, change, &local).map_err(CommandError::write)?;
     }
     Ok(local)
 }
@@ -444,7 +448,7 @@ mod tests {
         })
         .expect("a review");
         let timeout = "gh did not answer in time. The post may already have gone through: check the PR before posting again.";
-        let error = failed_post(&dir, &change, timeout.to_string()).to_string();
+        let error = failed_post(&dir, &change, timeout.into()).to_string();
         assert!(error.contains("check the PR before posting again") && error.contains("asks you to confirm"), "{error}");
         let kept = store::load_review(&dir, &change).expect("saved");
         assert_eq!((kept.body.as_str(), kept.verdict), ("Lock first.", Verdict::Approve), "nothing was forgotten");

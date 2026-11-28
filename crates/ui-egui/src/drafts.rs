@@ -40,7 +40,7 @@ impl PrCraftApp {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(pr_craft_engine::review::drafts_all().map_err(|e| e.to_string()));
+            let _ = tx.send(pr_craft_engine::review::drafts_all().map_err(crate::fail));
             ctx.request_repaint();
         });
         self.drafts_rx = Some(rx);

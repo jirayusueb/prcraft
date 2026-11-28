@@ -5,6 +5,7 @@ pub mod blob;
 pub mod bounded;
 pub mod checkout;
 pub mod commits;
+pub mod error;
 pub mod mine;
 pub mod review;
 pub mod stack;
@@ -19,6 +20,8 @@ use chrono::{DateTime, Utc};
 use pr_craft_core::{Change, Forge};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+pub use error::{FailKind, ForgeError};
 
 /// Whether a forge's CLI can act for the user, and the exact command that fixes it when not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -38,8 +41,10 @@ pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(120);
 const LOGIN_LIMIT: Duration = Duration::from_secs(30);
 
 /// What a failure to run `cli` says: it did not start, or it ran out of time.
-fn ran(cli: &str, error: &io::Error) -> String {
-    if error.kind() == io::ErrorKind::TimedOut { format!("{cli} did not answer: {error}") } else { format!("{cli} could not run: {error}") }
+fn ran(cli: &str, error: &io::Error) -> ForgeError {
+    let message =
+        if error.kind() == io::ErrorKind::TimedOut { format!("{cli} did not answer: {error}") } else { format!("{cli} could not run: {error}") };
+    ForgeError::spawn(error, message)
 }
 
 /// What a write that ran out of time says. The CLI was killed, but the request may have reached the forge first (the answer is what
@@ -47,13 +52,17 @@ fn ran(cli: &str, error: &io::Error) -> String {
 pub const UNKNOWN_OUTCOME: &str = "The post may already have gone through: check the PR before posting again.";
 
 /// Whether `error` is a write that ran out of time, so its outcome is not known.
-pub fn outcome_unknown(error: &str) -> bool {
-    error.contains(UNKNOWN_OUTCOME)
+pub fn outcome_unknown(error: impl AsRef<str>) -> bool {
+    error.as_ref().contains(UNKNOWN_OUTCOME)
 }
 
 /// [`ran`] for a call that writes: running out of time does not mean nothing was written.
-fn ran_write(cli: &str, error: &io::Error) -> String {
-    if error.kind() == io::ErrorKind::TimedOut { format!("{cli} did not answer in time. {UNKNOWN_OUTCOME}") } else { ran(cli, error) }
+fn ran_write(cli: &str, error: &io::Error) -> ForgeError {
+    if error.kind() == io::ErrorKind::TimedOut {
+        ForgeError::spawn(error, format!("{cli} did not answer in time. {UNKNOWN_OUTCOME}"))
+    } else {
+        ran(cli, error)
+    }
 }
 
 /// Asks `<cli> auth status`. A forge is signed in when any host its CLI knows is (one dead host, such as an unused
@@ -96,8 +105,15 @@ fn parse_auth_status(text: &str) -> Vec<ForgeHost> {
     hosts
 }
 
-pub(crate) fn signed_in_hosts(forge: Forge) -> Result<Vec<String>, String> {
-    let hosts = hosts(forge).map_err(|login| format!("{} cannot act for you: {login:?}", forge.cli()))?;
+pub(crate) fn signed_in_hosts(forge: Forge) -> Result<Vec<String>, ForgeError> {
+    let hosts = hosts(forge).map_err(|login| {
+        let kind = match login {
+            Login::LoggedOut { .. } => FailKind::Auth,
+            Login::CliMissing { .. } => FailKind::CliMissing,
+            _ => FailKind::Other,
+        };
+        ForgeError::new(kind, format!("{} cannot act for you: {login:?}", forge.cli()))
+    })?;
     Ok(hosts.into_iter().filter(|h| h.signed_in).map(|h| h.name).collect())
 }
 
@@ -116,7 +132,7 @@ pub const PAGE: usize = 100;
 /// Open changes on `host` where the user is a requested reviewer, newest first, and whether the host held more than was
 /// read: GitHub one search page of [`PAGE`], GitLab page by page up to `turn::PAGES` pages. The caller walks the hosts
 /// from [`hosts`], so one host failing leaves the others listed. Blocks on the CLI; call it off the UI thread.
-pub fn review_requested_on(forge: Forge, host: &str) -> Result<(Vec<Change>, bool), String> {
+pub fn review_requested_on(forge: Forge, host: &str) -> Result<(Vec<Change>, bool), ForgeError> {
     match forge {
         Forge::GitHub => {
             let (fields, limit) = ("number,title,repository,author,url,updatedAt,isDraft", format!("--limit={PAGE}"));
@@ -149,26 +165,26 @@ pub(crate) fn command(host: &str, cli: &str) -> Command {
 }
 
 /// Runs `cli` against `host` within the call deadline. Every forge read goes through here, so none can hang the UI.
-pub(crate) fn run_on(host: &str, cli: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn run_on(host: &str, cli: &str, args: &[&str]) -> Result<Vec<u8>, ForgeError> {
     run_limited(host, cli, args, CALL_LIMIT)
 }
 
-fn run_limited(host: &str, cli: &str, args: &[&str], limit: Duration) -> Result<Vec<u8>, String> {
+fn run_limited(host: &str, cli: &str, args: &[&str], limit: Duration) -> Result<Vec<u8>, ForgeError> {
     let out = bounded::run(command(host, cli).args(args), limit).map_err(|e| ran(cli, &e))?;
     finished(cli, args, out)
 }
 
 /// A call that writes to the forge, without input (an approval, a GraphQL mutation). A timeout says the post may have gone through.
-pub(crate) fn run_write_on(host: &str, cli: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn run_write_on(host: &str, cli: &str, args: &[&str]) -> Result<Vec<u8>, ForgeError> {
     write_limited(host, cli, args, None, CALL_LIMIT)
 }
 
 /// Like [`run_write_on`], with `input` piped to the CLI's stdin. Every user of this posts something.
-pub(crate) fn run_with_input_on(host: &str, cli: &str, args: &[&str], input: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn run_with_input_on(host: &str, cli: &str, args: &[&str], input: &[u8]) -> Result<Vec<u8>, ForgeError> {
     write_limited(host, cli, args, Some(input), CALL_LIMIT)
 }
 
-fn write_limited(host: &str, cli: &str, args: &[&str], input: Option<&[u8]>, limit: Duration) -> Result<Vec<u8>, String> {
+fn write_limited(host: &str, cli: &str, args: &[&str], input: Option<&[u8]>, limit: Duration) -> Result<Vec<u8>, ForgeError> {
     let mut command = command(host, cli);
     command.args(args);
     let out = match input {
@@ -179,16 +195,17 @@ fn write_limited(host: &str, cli: &str, args: &[&str], input: Option<&[u8]>, lim
     finished(cli, args, out)
 }
 
-fn finished(cli: &str, args: &[&str], out: std::process::Output) -> Result<Vec<u8>, String> {
+fn finished(cli: &str, args: &[&str], out: std::process::Output) -> Result<Vec<u8>, ForgeError> {
     if out.status.success() {
         Ok(out.stdout)
     } else {
-        Err(format!("`{cli} {}` failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(ForgeError::exited(format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim()), &stderr))
     }
 }
 
-pub(crate) fn from_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
-    serde_json::from_slice(bytes).map_err(|e| format!("unexpected CLI output: {e}"))
+pub(crate) fn from_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ForgeError> {
+    serde_json::from_slice(bytes).map_err(|e| ForgeError::from(format!("unexpected CLI output: {e}")))
 }
 
 #[cfg(test)]
@@ -198,7 +215,8 @@ mod deadline_tests {
     #[test]
     fn a_cli_that_does_not_answer_is_stopped_and_the_error_says_it_did_not_answer() {
         let error = run_limited("", "sleep", &["30"], Duration::from_millis(200)).expect_err("stopped");
-        assert!(error.starts_with("sleep did not answer"), "{error}");
+        assert_eq!(error.kind, FailKind::Timeout);
+        assert!(error.message.starts_with("sleep did not answer"), "{error}");
         assert_eq!(run_limited("", "echo", &["hi"], Duration::from_secs(10)).expect("ran"), b"hi\n");
         assert!(!outcome_unknown(&error), "a read that ran out of time wrote nothing, so there is nothing to check");
     }
@@ -207,7 +225,7 @@ mod deadline_tests {
     fn a_write_that_does_not_answer_says_it_may_already_have_gone_through() {
         for input in [None, Some(&b"{}"[..])] {
             let error = write_limited("", "sleep", &["30"], input, Duration::from_millis(200)).expect_err("stopped");
-            assert_eq!(error, "sleep did not answer in time. The post may already have gone through: check the PR before posting again.");
+            assert_eq!(error.message, "sleep did not answer in time. The post may already have gone through: check the PR before posting again.");
             assert!(outcome_unknown(&error));
         }
         let refused = write_limited("", "false", &[], None, Duration::from_secs(10)).expect_err("failed at once");
@@ -238,7 +256,7 @@ struct GitHubUser {
     login: String,
 }
 
-fn parse_github(bytes: &[u8], host: &str) -> Result<Vec<Change>, String> {
+fn parse_github(bytes: &[u8], host: &str) -> Result<Vec<Change>, ForgeError> {
     let prs: Vec<GitHubPr> = from_json(bytes)?;
     Ok(prs
         .into_iter()
@@ -284,7 +302,7 @@ struct GitLabReferences {
 }
 
 #[cfg(test)]
-fn parse_gitlab(bytes: &[u8], host: &str) -> Result<Vec<Change>, String> {
+fn parse_gitlab(bytes: &[u8], host: &str) -> Result<Vec<Change>, ForgeError> {
     let mrs: Vec<GitLabMr> = from_json(bytes)?;
     Ok(mrs.into_iter().map(|mr| gitlab_change(mr, host)).collect())
 }

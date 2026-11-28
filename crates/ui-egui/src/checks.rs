@@ -73,7 +73,7 @@ impl ChecksScreen {
     fn reload(&mut self, ctx: &Context) {
         if self.live {
             let change = self.change.clone();
-            self.list = Load::start(ctx, move || engine::checks_list(&change).map_err(|e| e.to_string()));
+            self.list = Load::start(ctx, move || engine::checks_list(&change).map_err(crate::fail));
         }
     }
 
@@ -125,7 +125,7 @@ impl ChecksScreen {
             return;
         }
         let (change, id, all) = (self.change.clone(), check.id, check.state != CheckState::Failing);
-        self.log = Load::start(ctx, move || engine::checks_log(&change, &id, all).map_err(|e| e.to_string()));
+        self.log = Load::start(ctx, move || engine::checks_log(&change, &id, all).map_err(crate::fail));
     }
 
     fn poll(&mut self, ctx: &Context) -> Option<Result<String, String>> {
@@ -155,7 +155,7 @@ impl ChecksScreen {
             return;
         }
         let change = self.change.clone();
-        self.rerun = Load::start(ctx, move || engine::checks_rerun(&change, &check, true).map(|d| d.message).map_err(|e| e.to_string()));
+        self.rerun = Load::start(ctx, move || engine::checks_rerun(&change, &check, true).map(|d| d.message).map_err(crate::fail));
     }
 
     /// The title bar and the three panes. Esc, or the back button, returns to the inbox.

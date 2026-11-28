@@ -45,9 +45,9 @@ struct GqlError {
 }
 
 impl<T> Answer<T> {
-    fn data(self) -> Result<T, String> {
+    fn data(self) -> Result<T, crate::ForgeError> {
         let why = self.errors.first().map_or("it answered with nothing", |e| e.message.as_str()).to_string();
-        self.data.ok_or_else(|| format!("GitHub did not return the change: {why}"))
+        self.data.ok_or_else(|| format!("GitHub did not return the change: {why}").into())
     }
 }
 
@@ -391,13 +391,13 @@ fn github_mine(pr: Pr, host: &str) -> Mine {
 }
 
 /// Parses `gh api graphql` output of the list query: the changes and whether the host holds more than one page.
-fn parse_github_list(bytes: &[u8], host: &str) -> Result<(Vec<Mine>, bool), String> {
+fn parse_github_list(bytes: &[u8], host: &str) -> Result<(Vec<Mine>, bool), crate::ForgeError> {
     let found = from_json::<Answer<SearchData>>(bytes)?.data()?.search;
     Ok((found.nodes.into_iter().flatten().map(|pr| github_mine(pr, host)).collect(), found.page_info.has_next_page))
 }
 
 /// One `gh api graphql` call: `fields` are `(flag, key=value)` pairs, `-F` for a typed one.
-fn graphql(host: &str, query: &str, fields: &[(&str, String)]) -> Result<Vec<u8>, String> {
+fn graphql(host: &str, query: &str, fields: &[(&str, String)]) -> Result<Vec<u8>, crate::ForgeError> {
     let query = format!("query={query}");
     let mut args = vec!["api", "graphql", "-f", query.as_str()];
     for (flag, field) in fields {
@@ -408,7 +408,7 @@ fn graphql(host: &str, query: &str, fields: &[(&str, String)]) -> Result<Vec<u8>
 
 /// The user's open changes on `host`, newest update first, and whether the host holds more than one page ([`PAGE`]). GitHub reads
 /// everything in one search; GitLab reads the list and then each change on its own. Blocks on the CLI.
-pub fn mine_on(forge: Forge, host: &str) -> Result<(Vec<Mine>, bool), String> {
+pub fn mine_on(forge: Forge, host: &str) -> Result<(Vec<Mine>, bool), crate::ForgeError> {
     match forge {
         Forge::GitHub => {
             let query = format!(
@@ -619,19 +619,19 @@ fn gitlab_fill(mine: &mut Mine, notes: u32) {
         }
         Err(e) => mine.unread.push(format!("the threads ({e})")),
     }
-    match size.map_err(|_| "stopped".to_string()).and_then(|s| s) {
+    match size.map_err(|_| crate::ForgeError::from("stopped")).and_then(|s| s) {
         Ok((a, d)) => (mine.additions, mine.deletions) = (Some(a), Some(d)),
         Err(e) => mine.unread.push(format!("the size ({e})")),
     }
 }
 
 /// Lines added and removed, from the change's diff.
-fn diff_size(change: &ChangeRef) -> Result<(u64, u64), String> {
+fn diff_size(change: &ChangeRef) -> Result<(u64, u64), crate::ForgeError> {
     let files = pr_craft_core::diff::parse_unified(&crate::review::diff(change)?);
     Ok(files.iter().fold((0, 0), |(a, d), f| (a + u64::from(f.additions), d + u64::from(f.deletions))))
 }
 
-fn gitlab_list(host: &str) -> Result<(Vec<Mine>, bool), String> {
+fn gitlab_list(host: &str) -> Result<(Vec<Mine>, bool), crate::ForgeError> {
     let (mrs, cut) = pages_up_to::<GlMr>(host, "merge_requests?state=opened&scope=created_by_me&order_by=updated_at&", 1)?;
     let mut rows: Vec<(Mine, u32)> = mrs.into_iter().map(|mr| (mr.user_notes_count, gitlab_mine(mr, host))).map(|(n, m)| (m, n)).collect();
     for batch in rows.chunks_mut(6) {
@@ -646,14 +646,14 @@ fn gitlab_list(host: &str) -> Result<(Vec<Mine>, bool), String> {
 }
 
 /// One change read in full: its row, every check, the merge queue and the methods the repository allows. Blocks on the CLI.
-pub fn detail_on(change: &ChangeRef) -> Result<MineDetail, String> {
+pub fn detail_on(change: &ChangeRef) -> Result<MineDetail, crate::ForgeError> {
     match change.forge {
         Forge::GitHub => github_detail(change),
         Forge::GitLab => gitlab_detail(change),
     }
 }
 
-fn github_detail(change: &ChangeRef) -> Result<MineDetail, String> {
+fn github_detail(change: &ChangeRef) -> Result<MineDetail, crate::ForgeError> {
     let (owner, name) = change.repo.split_once('/').ok_or_else(|| format!("{} is not `owner/name`", change.repo))?;
     let host = change.host_name();
     let query = format!(
@@ -680,21 +680,21 @@ fn github_detail(change: &ChangeRef) -> Result<MineDetail, String> {
     let mut mine = github_mine(pr, host);
     let (checks, checks_error) = match checks {
         Ok(list) => (list, None),
-        Err(e) => (Vec::new(), Some(e)),
+        Err(e) => (Vec::new(), Some(e.message)),
     };
     if checks_error.is_none() && !checks.is_empty() {
         mine.checks = Checks::of(&checks);
     }
     let (queue, queue_error) = match github_queue(host, owner, name, &mine) {
         Ok(queue) => (queue, None),
-        Err(e) => (None, Some(e)),
+        Err(e) => (None, Some(e.message)),
     };
     let message = format!("{} (#{})", mine.change.title, mine.change.number);
     Ok(MineDetail { mine, checks, checks_error, queue, closes: issues, methods, message, queue_error })
 }
 
 /// The merge queue of the base branch, `None` when the forge says it has none.
-fn github_queue(host: &str, owner: &str, name: &str, mine: &Mine) -> Result<Option<MergeQueue>, String> {
+fn github_queue(host: &str, owner: &str, name: &str, mine: &Mine) -> Result<Option<MergeQueue>, crate::ForgeError> {
     let query = "query($owner: String!, $name: String!, $branch: String!) { repository(owner: $owner, name: $name) {
         mergeQueue(branch: $branch) { entries(first: 50) { totalCount nodes { estimatedTimeToMerge pullRequest { number } } } } } }";
     let fields = [("-f", format!("owner={owner}")), ("-f", format!("name={name}")), ("-f", format!("branch={}", mine.base_branch))];
@@ -710,7 +710,7 @@ fn queue_of(queue: GqlQueue, number: u64) -> MergeQueue {
     MergeQueue { ahead: if queued { total.saturating_sub(1) } else { total }, estimate_secs, queued }
 }
 
-fn gitlab_detail(change: &ChangeRef) -> Result<MineDetail, String> {
+fn gitlab_detail(change: &ChangeRef) -> Result<MineDetail, crate::ForgeError> {
     let (host, base) = (change.host_name(), mr_base(change));
     let mr = from_json::<GlMr>(&run_on(host, "glab", &["api", &base])?)?;
     let notes = mr.user_notes_count;
@@ -728,7 +728,7 @@ fn gitlab_detail(change: &ChangeRef) -> Result<MineDetail, String> {
     }
     let (checks, checks_error) = match checks {
         Ok(list) => (list, None),
-        Err(e) => (Vec::new(), Some(e)),
+        Err(e) => (Vec::new(), Some(e.message)),
     };
     if checks_error.is_none() && !checks.is_empty() {
         mine.checks = Checks::of(&checks);
@@ -774,7 +774,7 @@ fn actions_id(link: &str, repo: &str) -> Option<String> {
     (!run.is_empty() && !job.is_empty()).then(|| format!("{run}/{job}"))
 }
 
-fn parse_gh_checks(bytes: &[u8], repo: &str) -> Result<Vec<Check>, String> {
+fn parse_gh_checks(bytes: &[u8], repo: &str) -> Result<Vec<Check>, crate::ForgeError> {
     let list: Vec<GhCheck> = from_json(bytes)?;
     Ok(list
         .into_iter()
@@ -845,7 +845,7 @@ fn gitlab_check(job: GlJob) -> Check {
 
 /// Every check of the change at its head: GitHub's check runs and statuses, GitLab's jobs of the head pipeline. A change with no
 /// checks gives an empty list. Blocks on the CLI.
-pub fn checks_on(change: &ChangeRef) -> Result<Vec<Check>, String> {
+pub fn checks_on(change: &ChangeRef) -> Result<Vec<Check>, crate::ForgeError> {
     let host = change.host_name();
     match change.forge {
         Forge::GitHub => {
@@ -853,7 +853,7 @@ pub fn checks_on(change: &ChangeRef) -> Result<Vec<Check>, String> {
             let fields = "name,bucket,link,workflow,startedAt,completedAt";
             match run_on(host, "gh", &["pr", "checks", &number, "-R", &change.repo, "--json", fields]) {
                 Ok(bytes) => parse_gh_checks(&bytes, &change.repo),
-                Err(e) if e.contains("no checks reported") => Ok(Vec::new()),
+                Err(e) if e.message.contains("no checks reported") => Ok(Vec::new()),
                 Err(e) => Err(e),
             }
         }
@@ -874,7 +874,7 @@ const LOG_BYTES: usize = 2 << 20;
 
 /// Runs the CLI and keeps only the last [`LOG_BYTES`] of its output, and whether anything before them was dropped. The whole log is
 /// never held: a huge one is read through and forgotten.
-fn tail_on(host: &str, cli: &str, args: &[String]) -> Result<(Vec<u8>, bool), String> {
+fn tail_on(host: &str, cli: &str, args: &[String]) -> Result<(Vec<u8>, bool), crate::ForgeError> {
     let mut child = crate::command(host, cli)
         .args(args)
         .process_group(0)
@@ -884,7 +884,7 @@ fn tail_on(host: &str, cli: &str, args: &[String]) -> Result<(Vec<u8>, bool), St
         .spawn()
         .map_err(|e| format!("{cli} could not run: {e}"))?;
     let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        return Err(format!("{cli} gave no output to read"));
+        return Err(format!("{cli} gave no output to read").into());
     };
     let deadline = crate::bounded::watch(&child, crate::CALL_LIMIT);
     let errors = std::thread::spawn(move || {
@@ -912,16 +912,20 @@ fn tail_on(host: &str, cli: &str, args: &[String]) -> Result<(Vec<u8>, bool), St
     }
     let status = child.wait().map_err(|e| format!("{cli} could not run: {e}"))?;
     if deadline.fired() {
-        return Err(format!("{cli} did not answer in {} seconds and was stopped", crate::CALL_LIMIT.as_secs()));
+        return Err(format!("{cli} did not answer in {} seconds and was stopped", crate::CALL_LIMIT.as_secs()).into());
     }
     read.map_err(|e| format!("could not read {cli}'s output: {e}"))?;
     let stderr = errors.join().unwrap_or_default();
-    if status.success() { Ok((tail, cut)) } else { Err(format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim())) }
+    if status.success() {
+        Ok((tail, cut))
+    } else {
+        Err(crate::ForgeError::exited(format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim()), &stderr))
+    }
 }
 
 /// The log of one check, cut to its last lines. `all` asks for the whole job instead of only its failed steps (GitHub); GitLab
 /// keeps one trace per job. Blocks on the CLI.
-pub fn log_on(change: &ChangeRef, check: &str, all: bool) -> Result<JobLog, String> {
+pub fn log_on(change: &ChangeRef, check: &str, all: bool) -> Result<JobLog, crate::ForgeError> {
     let host = change.host_name();
     let numeric = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
     let strings = |args: &[&str]| args.iter().map(|a| (*a).to_string()).collect::<Vec<String>>();
@@ -937,7 +941,7 @@ pub fn log_on(change: &ChangeRef, check: &str, all: bool) -> Result<JobLog, Stri
         }
         Forge::GitLab => {
             if !numeric(check) {
-                return Err(format!("{check:?} is not a GitLab job id"));
+                return Err(format!("{check:?} is not a GitLab job id").into());
             }
             let path = format!("projects/{}/jobs/{check}/trace", project_path(&change.repo));
             let (bytes, cut) = tail_on(host, "glab", &strings(&["api", &path]))?;
@@ -1080,7 +1084,7 @@ mod tests {
     #[test]
     fn a_log_is_read_only_for_a_job_the_forge_can_name() {
         let change = ChangeRef { forge: Forge::GitHub, repo: "o/r".into(), number: 1, host: None };
-        assert!(log_on(&change, "ci/legacy", false).expect_err("not an Actions job").contains("no log"));
+        assert!(log_on(&change, "ci/legacy", false).expect_err("not an Actions job").message.contains("no log"));
         assert!(log_on(&change, "12/--help", false).is_err(), "an id is digits, never an option for gh");
         let gitlab = ChangeRef { forge: Forge::GitLab, ..change };
         assert!(log_on(&gitlab, "../x", false).is_err());

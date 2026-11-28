@@ -8,7 +8,7 @@
 use pr_craft_core::mine::{Check, Checks, MergeMethod, MergeState, Mine, MineDetail};
 use pr_craft_core::{ChangeRef, Forge};
 use pr_craft_forge::act::{self, Label, MergeCall, Page, Person};
-use pr_craft_forge::{Login, UNKNOWN_OUTCOME, mine as read, outcome_unknown};
+use pr_craft_forge::{ForgeError, Login, UNKNOWN_OUTCOME, mine as read, outcome_unknown};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -142,7 +142,7 @@ fn read_source(forge: Forge) -> MineSource {
     MineSource { forge, cli: forge.cli(), state }
 }
 
-type HostRead = (String, Result<(Vec<Mine>, bool), String>);
+type HostRead = (String, Result<(Vec<Mine>, bool), pr_craft_forge::ForgeError>);
 
 /// Joins per-host answers: Listed while any host answered (failures stay in `hosts`), Failed when none did.
 fn joined(answers: Vec<HostRead>, signed_out: Vec<String>) -> MineState {
@@ -158,7 +158,7 @@ fn joined(answers: Vec<HostRead>, signed_out: Vec<String>) -> MineState {
                 truncated |= cut;
                 changes.extend(found);
             }
-            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error) }),
+            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error.message) }),
         }
     }
     changes.sort_by_key(|m| std::cmp::Reverse(m.change.updated_at));
@@ -261,7 +261,7 @@ struct RerunOf {
 pub fn checks_rerun(change: &ChangeRef, check: &str, confirm: bool) -> Result<Done, CommandError> {
     let _stale = Stale;
     refuse_without_confirm(confirm, "checks.rerun")?;
-    act::rerun(change, check).map_err(CommandError::Invalid)?.send().map_err(CommandError::Forge)?;
+    act::rerun(change, check).map_err(|e| CommandError::Invalid(e.message))?.send().map_err(CommandError::Forge)?;
     done(change, format!("Asked {} to run the job again. It starts over on the forge; its log is empty until it finishes.", change.forge.name()))
 }
 
@@ -269,8 +269,8 @@ pub fn checks_rerun(change: &ChangeRef, check: &str, confirm: bool) -> Result<Do
 pub fn pr_ready(change: &ChangeRef) -> Result<Done, CommandError> {
     let _stale = Stale;
     act::ready(change).send().map_err(CommandError::Forge)?;
-    let now =
-        read::detail_on(change).map_err(|e| CommandError::Forge(format!("It was sent, but the change could not be read back to check it: {e}")))?;
+    let now = read::detail_on(change)
+        .map_err(|e| ForgeError::new(e.kind, format!("It was sent, but the change could not be read back to check it: {e}")))?;
     verify_ready(&now.mine)?;
     done(change, format!("{} is ready for review. The reviewers you asked are notified now.", change.reference()))
 }
@@ -278,11 +278,11 @@ pub fn pr_ready(change: &ChangeRef) -> Result<Done, CommandError> {
 /// A draft the forge still lists as a draft was not made ready, whatever its CLI answered.
 fn verify_ready(mine: &Mine) -> Result<(), CommandError> {
     if mine.change.draft {
-        return Err(CommandError::Forge(format!(
+        return Err(CommandError::Forge(ForgeError::from(format!(
             "The request was sent, but {} still lists {} as a draft. It was not made ready.",
             mine.change.forge.name(),
             mine.change.reference()
-        )));
+        ))));
     }
     Ok(())
 }
@@ -334,14 +334,14 @@ struct LabelsOf {
 /// `pr.set_labels`: replaces the labels of the change with `labels`.
 pub fn pr_set_labels(change: &ChangeRef, labels: &[String]) -> Result<Done, CommandError> {
     let _stale = Stale;
-    act::set_labels(change, labels).map_err(CommandError::Invalid)?.send().map_err(CommandError::Forge)?;
+    act::set_labels(change, labels).map_err(|e| CommandError::Invalid(e.message))?.send().map_err(CommandError::Forge)?;
     done(change, format!("Labels of {} are now: {}.", change.reference(), if labels.is_empty() { "none".to_string() } else { labels.join(", ") }))
 }
 
 /// Adds `add` to the labels and takes `remove` off, whatever the labels are now: a label added since the reader looked stays.
 pub fn pr_change_labels(change: &ChangeRef, add: &[String], remove: &[String]) -> Result<Done, CommandError> {
     let _stale = Stale;
-    for write in act::change_labels(change, add, remove).map_err(CommandError::Invalid)? {
+    for write in act::change_labels(change, add, remove).map_err(|e| CommandError::Invalid(e.message))? {
         write.send().map_err(CommandError::Forge)?;
     }
     done(change, format!("Labels of {} changed: {} added, {} removed.", change.reference(), add.len(), remove.len()))
@@ -445,7 +445,7 @@ fn ready_to_merge(change: &ChangeRef, which: Merge, seen: &str) -> Result<MineDe
 }
 
 /// What a merge that ran out of time says: the request may have reached the forge first.
-fn merge_unknown(error: String, which: Merge) -> String {
+fn merge_unknown(error: ForgeError, which: Merge) -> ForgeError {
     if !outcome_unknown(&error) {
         return error;
     }
@@ -454,7 +454,7 @@ fn merge_unknown(error: String, which: Merge) -> String {
         Merge::Queue => "The change may already be in the merge queue: check it on the forge before queueing again.",
         Merge::Auto => "Merge when ready may already be on: check the change on the forge before turning it on again.",
     };
-    error.replace(UNKNOWN_OUTCOME, now)
+    ForgeError::new(error.kind, error.message.replace(UNKNOWN_OUTCOME, now))
 }
 
 /// `merge.start`, `merge.queue` and `merge.auto`: asks the forge to merge, queue or merge when ready. Always asks: nothing is sent
@@ -476,7 +476,7 @@ pub fn merge(which: Merge, p: MergeAsk) -> Result<Done, CommandError> {
     }
     let call =
         MergeCall { method, message: p.message, delete_branch: p.delete_branch, head_sha: p.head_sha.clone(), when_ready: which == Merge::Auto };
-    act::merge(&p.change, &call).map_err(CommandError::Invalid)?.send().map_err(|e| CommandError::Forge(merge_unknown(e, which)))?;
+    act::merge(&p.change, &call).map_err(|e| CommandError::Invalid(e.message))?.send().map_err(|e| CommandError::Forge(merge_unknown(e, which)))?;
     let (what, base) = (p.change.reference(), &detail.mine.base_branch);
     let message = match which {
         Merge::Start => format!("Asked {} to merge {what} into {base} ({}).", p.change.forge.name(), method.label()),
@@ -591,15 +591,17 @@ mod tests {
         let mut m = tests_support::mine(1);
         assert!(verify_ready(&m).is_ok());
         m.change.draft = true;
-        assert!(matches!(verify_ready(&m), Err(CommandError::Forge(text)) if text.contains("still lists")));
+        assert!(matches!(verify_ready(&m), Err(CommandError::Forge(text)) if text.message.contains("still lists")));
     }
 
     #[test]
     fn a_merge_that_ran_out_of_time_says_it_may_already_have_merged() {
-        let slow = format!("gh did not answer in time. {UNKNOWN_OUTCOME}");
-        assert!(merge_unknown(slow.clone(), Merge::Start).contains("may already have merged"));
-        assert!(!merge_unknown(slow, Merge::Start).contains("post"));
-        assert_eq!(merge_unknown("refused".into(), Merge::Start), "refused");
+        let slow = ForgeError::new(pr_craft_forge::FailKind::Timeout, format!("gh did not answer in time. {UNKNOWN_OUTCOME}"));
+        let said = merge_unknown(slow.clone(), Merge::Start);
+        assert!(said.message.contains("may already have merged"));
+        assert!(!said.message.contains("post"));
+        assert_eq!(said.kind, slow.kind);
+        assert_eq!(merge_unknown("refused".into(), Merge::Start), "refused".into());
     }
 
     fn listed_source() -> MineSource {
@@ -673,7 +675,7 @@ mod tests {
     }
 
     fn row(host: &str, listed: Result<(usize, bool), &str>) -> HostRead {
-        (host.to_string(), listed.map(|(n, cut)| ((0..n as u64).map(tests_support::mine).collect(), cut)).map_err(String::from))
+        (host.to_string(), listed.map(|(n, cut)| ((0..n as u64).map(tests_support::mine).collect(), cut)).map_err(ForgeError::from))
     }
 
     #[test]

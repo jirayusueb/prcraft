@@ -2,8 +2,10 @@
 
 pub mod ai;
 pub mod commits;
+pub mod diagnostics;
 pub mod keys;
 pub mod local;
+pub mod log;
 pub mod mine;
 pub mod palette;
 pub mod review;
@@ -19,13 +21,14 @@ pub mod view;
 use pr_craft_core::review::Verdict;
 use pr_craft_core::view::FileView;
 use pr_craft_core::{Change, ChangeRef, DateTime, Forge, Utc};
-use pr_craft_forge::Login;
+use pr_craft_forge::{FailKind, ForgeError, Login};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const BASE: &[&str] = &[
     "forge.status",
+    "diagnostics.get",
     "inbox.list",
     "review.open",
     "review.local",
@@ -91,6 +94,13 @@ const fn join<const N: usize>(parts: &[&[&'static str]]) -> [&'static str; N] {
 /// Every command id [`run`] takes.
 pub const COMMANDS: &[&str] = &join::<{ BASE.len() + ai::COMMANDS.len() + mine::COMMANDS.len() }>(&[BASE, &ai::COMMANDS, &mine::COMMANDS]);
 
+/// Which way a failed read or write of the files on this Mac was going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreKind {
+    Read,
+    Write,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
     #[error("unknown command `{0}` (commands: {list})", list = COMMANDS.join(", "))]
@@ -103,10 +113,43 @@ pub enum CommandError {
     Invalid(String),
     /// The forge or its CLI refused or failed; the message says what stays on this Mac.
     #[error("{0}")]
-    Forge(String),
+    Forge(#[from] ForgeError),
     /// Reading or writing the review files on this Mac failed.
-    #[error("{0}")]
-    Store(String),
+    #[error("{message}")]
+    Store { kind: StoreKind, message: String },
+}
+
+impl CommandError {
+    pub(crate) fn read(message: impl Into<String>) -> Self {
+        CommandError::Store { kind: StoreKind::Read, message: message.into() }
+    }
+
+    pub(crate) fn write(message: impl Into<String>) -> Self {
+        CommandError::Store { kind: StoreKind::Write, message: message.into() }
+    }
+
+    /// The stable code a report quotes, so a failure is told from its text alone.
+    pub fn code(&self) -> &'static str {
+        match self {
+            CommandError::Unknown(_) => "E-UNKNOWN",
+            CommandError::Encode(_) => "E-ENCODE",
+            CommandError::Params(_) => "E-PARAMS",
+            CommandError::Invalid(_) => "E-INVALID",
+            CommandError::Forge(error) => match error.kind {
+                FailKind::Auth => "E-FORGE-AUTH",
+                FailKind::Scope => "E-FORGE-SCOPE",
+                FailKind::RateLimit => "E-FORGE-RATE",
+                FailKind::Network => "E-FORGE-NET",
+                FailKind::CliMissing => "E-FORGE-CLI",
+                FailKind::CliOld => "E-FORGE-CLI-OLD",
+                FailKind::Timeout => "E-FORGE-TIMEOUT",
+                FailKind::Refused => "E-FORGE-REFUSED",
+                FailKind::Other => "E-FORGE-OTHER",
+            },
+            CommandError::Store { kind: StoreKind::Read, .. } => "E-STORE-READ",
+            CommandError::Store { kind: StoreKind::Write, .. } => "E-STORE-WRITE",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -280,8 +323,16 @@ pub struct ForgeStatus {
 
 /// Runs command `id` with its JSON params. Review commands take `{"change": {"forge", "repo", "number"}, ...}`.
 pub fn run(id: &str, value: &Value) -> Result<Value, CommandError> {
+    let started = std::time::Instant::now();
+    let result = dispatch(id, value);
+    log::record(id, value, &result, started.elapsed());
+    result
+}
+
+fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
     match id {
         "forge.status" => Ok(serde_json::to_value(forge_status())?),
+        "diagnostics.get" => diagnostics::get(),
         "inbox.list" => match value.get("forge") {
             None => Ok(serde_json::to_value(inbox_list())?),
             Some(forge) => {
@@ -508,7 +559,7 @@ pub fn inbox_source(forge: Forge) -> InboxSource {
 }
 
 /// One host's answer to `review_requested_on`, named by host.
-type HostRead = (String, Result<(Vec<Change>, bool), String>);
+type HostRead = (String, Result<(Vec<Change>, bool), ForgeError>);
 
 /// Joins per-host answers: Listed while any host answered (failures stay in `hosts`), Failed when none did.
 fn listed(forge: Forge, answers: Vec<HostRead>, signed_out: Vec<String>) -> SourceState {
@@ -524,7 +575,7 @@ fn listed(forge: Forge, answers: Vec<HostRead>, signed_out: Vec<String>) -> Sour
                 truncated |= cut;
                 changes.extend(found);
             }
-            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error) }),
+            Err(error) => hosts.push(HostAnswer { host, listed: 0, truncated: false, error: Some(error.message) }),
         }
     }
     changes.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
@@ -553,5 +604,33 @@ mod tests {
         assert!(!clear.incomplete(), "a signed-out host the user never set up does not block the all-clear");
         let none = listed(Forge::GitLab, vec![("gitlab.com".into(), Err("401".into()))], vec![]);
         assert!(matches!(none, SourceState::Failed { ref error } if error.contains("gitlab.com")), "no host answered: {none:?}");
+    }
+
+    #[test]
+    fn every_error_has_its_own_code() {
+        let forge = |kind| CommandError::Forge(ForgeError::new(kind, "x"));
+        let parse = serde_json::from_str::<u8>("x").expect_err("not a number");
+        let table = [
+            (CommandError::Unknown("x".into()), "E-UNKNOWN"),
+            (CommandError::Encode(serde_json::from_str::<u8>("x").expect_err("not a number")), "E-ENCODE"),
+            (CommandError::Params(parse), "E-PARAMS"),
+            (CommandError::Invalid("x".into()), "E-INVALID"),
+            (forge(FailKind::Auth), "E-FORGE-AUTH"),
+            (forge(FailKind::Scope), "E-FORGE-SCOPE"),
+            (forge(FailKind::RateLimit), "E-FORGE-RATE"),
+            (forge(FailKind::Network), "E-FORGE-NET"),
+            (forge(FailKind::CliMissing), "E-FORGE-CLI"),
+            (forge(FailKind::CliOld), "E-FORGE-CLI-OLD"),
+            (forge(FailKind::Timeout), "E-FORGE-TIMEOUT"),
+            (forge(FailKind::Refused), "E-FORGE-REFUSED"),
+            (forge(FailKind::Other), "E-FORGE-OTHER"),
+            (CommandError::read("x"), "E-STORE-READ"),
+            (CommandError::write("x"), "E-STORE-WRITE"),
+        ];
+        let codes: std::collections::BTreeSet<_> = table.iter().map(|(_, code)| *code).collect();
+        assert_eq!(codes.len(), table.len(), "no two errors share a code");
+        for (error, code) in table {
+            assert_eq!(error.code(), code, "{error}");
+        }
     }
 }

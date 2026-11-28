@@ -21,7 +21,7 @@ pub struct SettingsView {
 
 /// Where drafts and settings live on this Mac (`$PR_CRAFT_DATA_DIR`, else Application Support).
 pub fn data_dir() -> Result<std::path::PathBuf, CommandError> {
-    store::data_dir().map_err(CommandError::Store)
+    store::data_dir().map_err(CommandError::read)
 }
 
 /// The saved settings; the defaults when none were saved. A file that does not read is an error and stays on disk.
@@ -31,7 +31,7 @@ pub fn load() -> Result<Settings, CommandError> {
 
 /// [`load`] from the data folder `dir`.
 pub fn load_in(dir: &std::path::Path) -> Result<Settings, CommandError> {
-    store::load_settings(dir).map_err(CommandError::Store)
+    store::load_settings(dir).map_err(CommandError::read)
 }
 
 /// `settings.get`.
@@ -41,12 +41,12 @@ pub fn get() -> Result<SettingsView, CommandError> {
 
 /// `settings.set`: changes the named values and saves. Returns the settings as saved.
 pub fn set(patch: &Value) -> Result<Settings, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
-    let _guard = SAVING.lock().map_err(|_| CommandError::Store("an earlier save crashed; restart PR Craft".into()))?;
-    let current = store::load_settings(&dir).map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
+    let _guard = SAVING.lock().map_err(|_| CommandError::write("an earlier save crashed; restart PR Craft"))?;
+    let current = store::load_settings(&dir).map_err(CommandError::read)?;
     let next = current.patched(&with_home(patch)).map_err(CommandError::Invalid)?;
     crate::local::check_settings(&current, &next).map_err(CommandError::Invalid)?;
-    store::save_settings(&dir, &next).map_err(CommandError::Store)?;
+    store::save_settings(&dir, &next).map_err(CommandError::write)?;
     Ok(next)
 }
 

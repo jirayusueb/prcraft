@@ -912,6 +912,12 @@ fn the_inbox_names_its_navigation_rows_and_actions_to_assistive_technology() {
 }
 
 #[test]
+fn offline_and_sync_offers_copy_diagnostics_by_name() {
+    let harness = harness(settings_app(Tab::Sync), 1440.0, 900.0);
+    assert!(named(&harness, Role::Button, "Copy diagnostics"), "the report block has a button the keyboard and screen readers reach");
+}
+
+#[test]
 fn tab_moves_from_cancel_to_check_out_here_in_the_confirm_step() {
     let mut confirm = harness(local_app(LocalCase::Confirm), 1440.0, 900.0);
     confirm.run();

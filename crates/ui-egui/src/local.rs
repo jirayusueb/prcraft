@@ -72,7 +72,7 @@ impl Local {
 
     fn reload(&mut self, ctx: &Context, change: &ChangeRef) {
         let change = change.clone();
-        self.status = Fetch::start(ctx, move || local::status(&change).map_err(|e| e.to_string()));
+        self.status = Fetch::start(ctx, move || local::status(&change).map_err(crate::fail));
     }
 
     pub(crate) fn busy(&self) -> bool {
@@ -126,7 +126,7 @@ impl Local {
                 self.said = None;
                 let change = change.clone();
                 self.work = Fetch::start(ctx, move || {
-                    let made = local::worktree(&change).map_err(|e| e.to_string())?;
+                    let made = local::worktree(&change).map_err(crate::fail)?;
                     let at = tilde(&made.path);
                     Ok(if made.reused {
                         format!("Reused the worktree at {at}.{}", other_commit_words(made.other_commit))
@@ -140,7 +140,7 @@ impl Local {
                 let Some(confirm) = self.confirm.take() else { return };
                 let change = change.clone();
                 self.work = Fetch::start(ctx, move || {
-                    let done = local::here(&change, true, Some(&confirm.branch)).map_err(|e| e.to_string())?;
+                    let done = local::here(&change, true, Some(&confirm.branch)).map_err(crate::fail)?;
                     Ok(format!("Switched {} to {}.", confirm.folder, done.branch.unwrap_or(confirm.branch)))
                 });
             }
@@ -183,8 +183,8 @@ impl Local {
         }
         let change = change.clone();
         self.work = Fetch::start(ctx, move || {
-            let opened = local::open_editor(&change, editor, file.as_ref().map(|t| t.path.as_str()), file.as_ref().map(|t| t.line))
-                .map_err(|e| e.to_string())?;
+            let opened =
+                local::open_editor(&change, editor, file.as_ref().map(|t| t.path.as_str()), file.as_ref().map(|t| t.line)).map_err(crate::fail)?;
             let news = match file {
                 Some(t) => format!("Opened {}:{} in {}.", t.path, t.line, editor.label()),
                 None => format!("Opened {} in {}.", tilde(&opened.root), editor.label()),

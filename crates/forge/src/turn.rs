@@ -18,7 +18,7 @@ use crate::{PAGE, from_json, parse_github, run_on, run_with_input_on, signed_in_
 pub struct Reviewed {
     pub change: Change,
     /// `Ok(None)`: the forge lists the change but holds no review of the user's on it.
-    pub snapshot: Result<Option<Snapshot>, String>,
+    pub snapshot: Result<Option<Snapshot>, crate::ForgeError>,
 }
 
 /// What [`reviewed`] found.
@@ -37,7 +37,7 @@ struct Person {
 }
 
 /// The login the CLI acts as on `host` (GitHub reads only github.com). Blocks on the CLI.
-pub fn my_login(forge: Forge, host: &str) -> Result<String, String> {
+pub fn my_login(forge: Forge, host: &str) -> Result<String, crate::ForgeError> {
     let me: Person = from_json(&run_on(host, forge.cli(), &["api", "user"])?)?;
     Ok(me.login)
 }
@@ -50,22 +50,22 @@ const REVIEWED_PAGES: usize = 3;
 /// [`PAGE`] per host, each with its [`Snapshot`]. Every host the CLI is signed in to is read, as the login it has
 /// there. A change whose lookup failed carries its error, so the caller never counts it as quiet. Blocks on the CLI;
 /// call it off the UI thread.
-pub fn reviewed(forge: Forge) -> Result<ReviewedList, String> {
+pub fn reviewed(forge: Forge) -> Result<ReviewedList, crate::ForgeError> {
     let mut truncated = false;
     let mut candidates: Vec<(Change, String)> = Vec::new();
     for host in signed_in_hosts(forge)? {
-        let me = my_login(forge, &host).map_err(|e| format!("{host}: {e}"))?;
+        let me = my_login(forge, &host).map_err(|e| e.context(&host))?;
         let (found, cut) = match forge {
             Forge::GitHub => {
                 let (fields, limit) = ("number,title,repository,author,url,updatedAt,isDraft", format!("--limit={}", PAGE * REVIEWED_PAGES));
                 let args = ["search", "prs", "--reviewed-by=@me", "--state=open", "--sort=updated", &limit, "--json", fields];
-                let found = run_on(&host, "gh", &args).and_then(|bytes| parse_github(&bytes, &host)).map_err(|e| format!("{host}: {e}"))?;
+                let found = run_on(&host, "gh", &args).and_then(|bytes| parse_github(&bytes, &host)).map_err(|e| e.context(&host))?;
                 let cut = found.len() >= PAGE * REVIEWED_PAGES;
                 (found, cut)
             }
             Forge::GitLab => {
                 let base = format!("merge_requests?state=opened&scope=all&order_by=updated_at&reviewer_username={me}&");
-                let (mrs, cut) = pages_up_to::<crate::GitLabMr>(&host, &base, REVIEWED_PAGES).map_err(|e| format!("{host}: {e}"))?;
+                let (mrs, cut) = pages_up_to::<crate::GitLabMr>(&host, &base, REVIEWED_PAGES).map_err(|e| e.context(&host))?;
                 (mrs.into_iter().map(|mr| crate::gitlab_change(mr, &host)).collect(), cut)
             }
         };
@@ -87,7 +87,7 @@ pub fn reviewed(forge: Forge) -> Result<ReviewedList, String> {
 
 /// What happened on `change` around the user's latest review of it. `None` when the user has no review there.
 /// Blocks on the CLI.
-pub fn snapshot(change: &ChangeRef, me: &str) -> Result<Option<Snapshot>, String> {
+pub fn snapshot(change: &ChangeRef, me: &str) -> Result<Option<Snapshot>, crate::ForgeError> {
     match change.forge {
         Forge::GitHub => {
             let (owner, name) = change.repo.split_once('/').ok_or_else(|| format!("{} is not `owner/name`", change.repo))?;
@@ -354,11 +354,11 @@ fn github_thread(thread: GqlThread) -> (Thread, bool) {
     (thread, gap)
 }
 
-fn github_snapshot(bytes: &[u8], me: &str) -> Result<Option<Snapshot>, String> {
+fn github_snapshot(bytes: &[u8], me: &str) -> Result<Option<Snapshot>, crate::ForgeError> {
     let answer: GqlAnswer = from_json(bytes)?;
     let Some(pull) = answer.data.and_then(|d| d.repository).and_then(|r| r.pull_request) else {
         let why = answer.errors.first().map_or("the change is not visible to this login", |e| e.message.as_str());
-        return Err(format!("GitHub did not return the change: {why}"));
+        return Err(format!("GitHub did not return the change: {why}").into());
     };
     let mut gaps = Vec::new();
     if pull.review_threads.has_earlier() {
@@ -487,12 +487,12 @@ struct GlRead {
 pub(crate) const PAGES: usize = 10;
 
 /// Every item of a paged GitLab list, and whether the pages ran out before the list did. `base` ends in `?` or `&`.
-pub(crate) fn pages<T: DeserializeOwned>(host: &str, base: &str) -> Result<(Vec<T>, bool), String> {
+pub(crate) fn pages<T: DeserializeOwned>(host: &str, base: &str) -> Result<(Vec<T>, bool), crate::ForgeError> {
     pages_up_to(host, base, PAGES)
 }
 
 /// [`pages`] with its own page limit; `true` means the limit was hit with a full last page.
-pub(crate) fn pages_up_to<T: DeserializeOwned>(host: &str, base: &str, limit: usize) -> Result<(Vec<T>, bool), String> {
+pub(crate) fn pages_up_to<T: DeserializeOwned>(host: &str, base: &str, limit: usize) -> Result<(Vec<T>, bool), crate::ForgeError> {
     let mut all = Vec::new();
     for page in 1..=limit {
         let got: Vec<T> = from_json(&run_on(host, "glab", &["api", &format!("{base}per_page=100&page={page}")])?)?;
@@ -505,11 +505,11 @@ pub(crate) fn pages_up_to<T: DeserializeOwned>(host: &str, base: &str, limit: us
     Ok((all, true))
 }
 
-fn joined<T>(job: thread::Result<Result<T, String>>) -> Result<T, String> {
+fn joined<T>(job: thread::Result<Result<T, crate::ForgeError>>) -> Result<T, crate::ForgeError> {
     job.unwrap_or_else(|_| Err("the lookup stopped".into()))
 }
 
-fn gitlab_read(change: &ChangeRef, me: &str) -> Result<GlRead, String> {
+fn gitlab_read(change: &ChangeRef, me: &str) -> Result<GlRead, crate::ForgeError> {
     let (host, base) = (change.host_name(), format!("projects/{}/merge_requests/{}", project_path(&change.repo), change.number));
     let (mr, approvals, discussions, commits, versions) = thread::scope(|scope| {
         let discussions = scope.spawn(|| pages::<GlDiscussion>(host, &format!("{base}/discussions?")));
@@ -619,7 +619,7 @@ fn gitlab_snapshot(me: &str, read: GlRead) -> Option<Snapshot> {
 /// The unified diff between two commits of `change`'s repository, for what changed since a review.
 /// Callers use it only when the review's commit still belongs to the change; see `pr_craft_core::turn::rewritten`.
 /// Blocks on the CLI.
-pub fn compare_commits(change: &ChangeRef, from_sha: &str, to_sha: &str) -> Result<Compare, String> {
+pub fn compare_commits(change: &ChangeRef, from_sha: &str, to_sha: &str) -> Result<Compare, crate::ForgeError> {
     compare_diff(change, from_sha, to_sha)
 }
 
@@ -634,7 +634,7 @@ pub struct Call {
 }
 
 impl Call {
-    fn send(&self) -> Result<(), String> {
+    fn send(&self) -> Result<(), crate::ForgeError> {
         let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
         run_with_input_on(&self.host, self.cli, &args, self.body.to_string().as_bytes()).map(drop)
     }
@@ -686,7 +686,7 @@ struct GlUserId {
 
 /// Hands the user's review of `change` to `to`: `to` is asked to review and `from_me` stops being a reviewer.
 /// This writes to the forge. Blocks on the CLI.
-pub fn hand_off(change: &ChangeRef, from_me: &str, to: &str) -> Result<(), String> {
+pub fn hand_off(change: &ChangeRef, from_me: &str, to: &str) -> Result<(), crate::ForgeError> {
     match change.forge {
         Forge::GitHub => github_hand_off_calls(change, from_me, to).iter().try_for_each(Call::send),
         Forge::GitLab => {
@@ -830,7 +830,7 @@ mod tests {
     fn a_window_of_only_reply_reviews_with_an_earlier_page_is_an_error_not_no_review() {
         let replies: Vec<Value> = (0..20).map(|i| review(&format!("R{i}"), "COMMENTED", 17, "c1", "", &[reply_comment()])).collect();
         let error = github_snapshot(&pull_page(&replies, &[], false, true), ME).expect_err("an older review may exist");
-        assert!(!error.is_empty());
+        assert!(!error.message.is_empty());
         assert_eq!(github_snapshot(&pull_page(&replies, &[], false, false), ME), Ok(None), "with nothing earlier, there is none");
     }
 
@@ -838,7 +838,7 @@ mod tests {
     fn a_graphql_error_is_an_error_not_a_quiet_change() {
         let missing = br#"{"data":{"repository":null},"errors":[{"message":"Could not resolve to a Repository"}]}"#;
         let error = github_snapshot(missing, ME).expect_err("no change returned");
-        assert!(error.contains("Could not resolve"), "{error}");
+        assert!(error.message.contains("Could not resolve"), "{error}");
     }
 
     // Shape of GitLab's merge request, discussions, commits (newest first), versions (newest first) and approvals

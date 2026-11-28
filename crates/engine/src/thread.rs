@@ -38,12 +38,12 @@ pub fn reply(change: &ChangeRef, thread: &str, body: String) -> Result<(), Comma
     if body.trim().is_empty() {
         return Err(CommandError::Invalid("A reply needs some text.".into()));
     }
-    let request = forge::reply_request(change, thread, &body).map_err(CommandError::Invalid)?;
+    let request = forge::reply_request(change, thread, &body).map_err(|e| CommandError::Invalid(e.message))?;
     forge::execute(&request).map_err(CommandError::Forge)
 }
 
 /// `thread.resolve`: resolves the thread on the forge now, or reopens it with `resolved` false.
 pub fn resolve(change: &ChangeRef, thread: &str, resolved: bool) -> Result<(), CommandError> {
-    let request = forge::resolve_request(change, thread, resolved).map_err(CommandError::Invalid)?;
+    let request = forge::resolve_request(change, thread, resolved).map_err(|e| CommandError::Invalid(e.message))?;
     forge::execute(&request).map_err(CommandError::Forge)
 }

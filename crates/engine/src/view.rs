@@ -74,9 +74,9 @@ fn base64(bytes: &[u8]) -> String {
 
 /// `review.views`: the view chosen for each file extension.
 pub fn views() -> Result<BTreeMap<String, FileView>, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = review::lock()?;
-    store::load_views(&dir).map_err(CommandError::Store)
+    store::load_views(&dir).map_err(CommandError::read)
 }
 
 /// `review.set_view`: remembers `view` for every file with `extension`, and returns all choices. A view the extension
@@ -89,11 +89,11 @@ pub fn set_view(extension: &str, view: FileView) -> Result<BTreeMap<String, File
     if !view::views_for(&format!("x.{ext}")).contains(&view) {
         return Err(CommandError::Invalid(format!(".{ext} files have no {} view", view.label())));
     }
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = review::lock()?;
-    let mut all = store::load_views(&dir).map_err(CommandError::Store)?;
+    let mut all = store::load_views(&dir).map_err(CommandError::read)?;
     all.insert(ext, view);
-    store::save_views(&dir, &all).map_err(CommandError::Store)?;
+    store::save_views(&dir, &all).map_err(CommandError::write)?;
     Ok(all)
 }
 

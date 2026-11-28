@@ -108,7 +108,7 @@ fn read_source(forge: Forge) -> Result<BackState, String> {
         let mine = scope.spawn(move || crate::mine::waiting_on_you(forge));
         (forge::reviewed(forge), mine.join().unwrap_or_else(|_| (Vec::new(), Some("The read of your own changes stopped.".to_string()))))
     });
-    let list = list?;
+    let list = list.map_err(|e| e.message)?;
     let (mut items, mut failed, mut partial) = (Vec::new(), Vec::new(), Vec::new());
     for reviewed in list.items {
         match reviewed.snapshot {
@@ -347,10 +347,10 @@ fn active_pause(pause: Option<Pause>, now: DateTime<Utc>) -> Option<Pause> {
 
 /// The notifications for sources already read, with seen marks and the pause from this Mac. Reads no forge.
 pub fn compose(back: &[BackSource], requested: &[InboxSource]) -> Result<Notifications, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let state = {
         let _guard = lock()?;
-        store::load_notify(&dir).map_err(CommandError::Store)?
+        store::load_notify(&dir).map_err(CommandError::read)?
     };
     let (events, errors) = events(back, requested, &state.seen);
     let unseen = events.iter().filter(|e| !e.seen).count();
@@ -392,26 +392,26 @@ pub fn toggle_pause() -> Result<PauseStatus, CommandError> {
 
 /// Loads the stored pause, lets `change` replace it (it sees the pause that holds now), and saves it.
 fn set_pause(change: impl FnOnce(Option<Pause>) -> Option<Pause>) -> Result<PauseStatus, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = lock()?;
-    let mut state = store::load_notify(&dir).map_err(CommandError::Store)?;
+    let mut state = store::load_notify(&dir).map_err(CommandError::read)?;
     state.pause = change(active_pause(state.pause.take(), Utc::now()));
-    store::save_notify(&dir, &state).map_err(CommandError::Store)?;
+    store::save_notify(&dir, &state).map_err(CommandError::write)?;
     Ok(PauseStatus { pause: state.pause, system_notice: SYSTEM_NOTICE })
 }
 
 /// `notify.seen`: marks events seen. Returns how many were not seen before.
 pub fn seen(ids: Vec<String>) -> Result<usize, CommandError> {
-    let dir = store::data_dir().map_err(CommandError::Store)?;
+    let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = lock()?;
-    let mut state: NotifyState = store::load_notify(&dir).map_err(CommandError::Store)?;
+    let mut state: NotifyState = store::load_notify(&dir).map_err(CommandError::read)?;
     let added = ids.into_iter().filter(|id| state.seen.insert(id.clone())).count();
-    store::save_notify(&dir, &state).map_err(CommandError::Store)?;
+    store::save_notify(&dir, &state).map_err(CommandError::write)?;
     Ok(added)
 }
 
 fn lock() -> Result<std::sync::MutexGuard<'static, ()>, CommandError> {
-    NOTIFY.lock().map_err(|_| CommandError::Store("the notification state was left half-written by a crash in this process".into()))
+    NOTIFY.lock().map_err(|_| CommandError::write("the notification state was left half-written by a crash in this process"))
 }
 
 #[cfg(test)]

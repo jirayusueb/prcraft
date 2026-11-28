@@ -51,17 +51,17 @@ struct Reset {
 }
 
 fn dir() -> Result<PathBuf, CommandError> {
-    store::data_dir().map_err(CommandError::Store)
+    store::data_dir().map_err(CommandError::read)
 }
 
 fn lock() -> Result<MutexGuard<'static, ()>, CommandError> {
-    SAVING.lock().map_err(|_| CommandError::Store("an earlier save crashed; restart PR Craft".into()))
+    SAVING.lock().map_err(|_| CommandError::write("an earlier save crashed; restart PR Craft"))
 }
 
 /// The saved bindings that still name an action and a key of the table. One that does not (a hand edit, a removed
 /// action) is ignored, not an error: the action keeps its default.
 fn load(dir: &Path) -> Result<BTreeMap<String, Binding>, CommandError> {
-    let saved = store::load_keys(dir).map_err(CommandError::Store)?;
+    let saved = store::load_keys(dir).map_err(CommandError::read)?;
     Ok(saved.into_iter().filter(|(id, b)| keys::action(id).is_some() && Binding::new(&b.key, &b.modifiers).as_ref() == Some(b)).collect())
 }
 
@@ -117,7 +117,7 @@ fn rebind_in(dir: &Path, value: &Value) -> Result<Rebound, CommandError> {
     } else {
         saved.insert(action.id.to_string(), binding);
     }
-    store::save_keys(dir, &saved).map_err(CommandError::Store)?;
+    store::save_keys(dir, &saved).map_err(CommandError::write)?;
     let effective = keys::effective(&saved);
     Ok(Rebound { row: row(action, &saved, &effective), warnings })
 }
@@ -158,7 +158,7 @@ fn reset_in(dir: &Path, value: &Value) -> Result<usize, CommandError> {
     }
     let changed = before - saved.len();
     if changed > 0 {
-        store::save_keys(dir, &saved).map_err(CommandError::Store)?;
+        store::save_keys(dir, &saved).map_err(CommandError::write)?;
     }
     Ok(changed)
 }

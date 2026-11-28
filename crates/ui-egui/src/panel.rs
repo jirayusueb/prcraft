@@ -165,16 +165,16 @@ fn ready_work(change: &ChangeRef, seed: &Picks, picks: &Picks, ready: bool) -> R
     // since the pane was read stays.
     let (add, remove) = delta(&seed.reviewers, &picks.reviewers);
     if !add.is_empty() || !remove.is_empty() {
-        engine::pr_change_reviewers(change, &add, &remove).map_err(|e| stop(&done, e.to_string()))?;
+        engine::pr_change_reviewers(change, &add, &remove).map_err(|e| stop(&done, crate::fail(e)))?;
         done.push("Reviewers set".into());
     }
     let (add, remove) = delta(&seed.labels, &picks.labels);
     if !add.is_empty() || !remove.is_empty() {
-        engine::pr_change_labels(change, &add, &remove).map_err(|e| stop(&done, e.to_string()))?;
+        engine::pr_change_labels(change, &add, &remove).map_err(|e| stop(&done, crate::fail(e)))?;
         done.push("Labels set".into());
     }
     if ready {
-        done.push(engine::pr_ready(change).map_err(|e| stop(&done, e.to_string()))?.message);
+        done.push(engine::pr_ready(change).map_err(|e| stop(&done, crate::fail(e)))?.message);
     }
     Ok(if done.is_empty() { "Nothing to change.".to_string() } else { format!("{}.", done.join(". ").trim_end_matches('.')) })
 }
@@ -247,8 +247,8 @@ impl Panel {
             return;
         }
         let (a, b) = (self.change.clone(), self.change.clone());
-        self.detail = Load::start(ctx, move || engine::detail(&a).map_err(|e| e.to_string()));
-        self.threads = Load::start(ctx, move || pr_craft_engine::thread::list(&b).map_err(|e| e.to_string()));
+        self.detail = Load::start(ctx, move || engine::detail(&a).map_err(crate::fail));
+        self.threads = Load::start(ctx, move || pr_craft_engine::thread::list(&b).map_err(crate::fail));
     }
 
     /// A pane whose reads have all answered, for the render tests.
@@ -514,11 +514,11 @@ impl Panel {
         }
         if matches!(self.people, Load::Idle) {
             let c = self.change.clone();
-            self.people = Load::start(ctx, move || engine::pr_collaborators(&c).map_err(|e| e.to_string()));
+            self.people = Load::start(ctx, move || engine::pr_collaborators(&c).map_err(crate::fail));
         }
         if matches!(self.labels, Load::Idle) {
             let c = self.change.clone();
-            self.labels = Load::start(ctx, move || engine::pr_labels(&c).map_err(|e| e.to_string()));
+            self.labels = Load::start(ctx, move || engine::pr_labels(&c).map_err(crate::fail));
         }
     }
 
@@ -935,7 +935,7 @@ impl Panel {
         self.run(ctx, move || {
             engine::pr_change_reviewers(&change, std::slice::from_ref(&who), &[])
                 .map(|_| format!("Asked {who} for another look at {}.", change.reference()))
-                .map_err(|e| e.to_string())
+                .map_err(crate::fail)
         });
     }
 
@@ -951,7 +951,7 @@ impl Panel {
             enabled: which.is_some(),
             confirm: which.is_some(),
         };
-        self.run(ctx, move || engine::merge(which.unwrap_or(Merge::Auto), ask).map(|d| d.message).map_err(|e| e.to_string()));
+        self.run(ctx, move || engine::merge(which.unwrap_or(Merge::Auto), ask).map(|d| d.message).map_err(crate::fail));
     }
 
     /// Whether the merge can be asked for at all: a failing check or a reviewer who asked for changes stops it first, so there are

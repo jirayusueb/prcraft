@@ -302,7 +302,7 @@ pub struct Incoming {
     pub paths: Vec<String>,
 }
 
-fn read_incoming(change: &ChangeRef) -> Result<Incoming, String> {
+fn read_incoming(change: &ChangeRef) -> Result<Incoming, pr_craft_forge::ForgeError> {
     let (meta, text) = std::thread::scope(|scope| {
         let meta = scope.spawn(|| forge::change_meta(change));
         let text = forge::diff(change);
@@ -377,7 +377,7 @@ pub fn status(change: &ChangeRef) -> Result<Status, CommandError> {
 }
 
 /// [`status`] with the forge's answer in hand; `None` when it was not asked for.
-pub fn status_with(saved: &Settings, change: &ChangeRef, incoming: Option<&Result<Incoming, String>>) -> Status {
+pub fn status_with(saved: &Settings, change: &ChangeRef, incoming: Option<&Result<Incoming, pr_craft_forge::ForgeError>>) -> Status {
     let registered = saved.clones.get(&checkout::change_key(change));
     let (clone, dir) = match registered {
         Some(path) => {
@@ -442,7 +442,7 @@ pub fn status_with(saved: &Settings, change: &ChangeRef, incoming: Option<&Resul
         editor_root: editor_root.map(|p| p.display().to_string()),
         worktree_action,
         here_action,
-        forge_error: incoming.and_then(|found| found.as_ref().err().cloned()),
+        forge_error: incoming.and_then(|found| found.as_ref().err().map(|e| e.message.clone())),
         setup: registered.is_none().then(|| setup(change)),
     }
 }
@@ -589,7 +589,8 @@ pub struct Here {
 pub fn here(change: &ChangeRef, confirm: bool, expect: Option<&str>) -> Result<Here, CommandError> {
     let saved = settings::load()?;
     let incoming = read_incoming(change).map_err(CommandError::Forge)?;
-    here_with(&saved, change, &incoming, confirm, expect, |dir| pr_craft_forge::checkout::checkout_in(change, dir)).map_err(invalid)
+    here_with(&saved, change, &incoming, confirm, expect, |dir| pr_craft_forge::checkout::checkout_in(change, dir).map_err(|e| e.message))
+        .map_err(invalid)
 }
 
 /// [`here`] with the forge's answer in hand and the switch given: the forge CLI in production.
@@ -664,7 +665,7 @@ pub struct Opened {
 /// `open.editor`: opens `path` (relative to the checkout) at `line` in `editor`, or the checkout itself in Terminal.
 pub fn open_editor(change: &ChangeRef, editor: Editor, path: Option<&str>, line: Option<u32>) -> Result<Opened, CommandError> {
     let saved = settings::load()?;
-    let want = forge::change_meta(change).map(|meta| meta.head_sha);
+    let want = forge::change_meta(change).map(|meta| meta.head_sha).map_err(|e| e.message);
     let (root, note) = editor_root(&saved, change, &want).map_err(invalid)?;
     launch(editor, &root, path, line, std::env::var_os("PATH").as_deref()).map(|opened| Opened { note, ..opened }).map_err(invalid)
 }

@@ -5045,6 +5045,7 @@ version = "0.1.0"
 dependencies = [
  "craft",
  "eframe",
+ "pr-craft-engine",
  "pr-craft-ui-egui",
 ]
 

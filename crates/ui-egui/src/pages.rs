@@ -27,6 +27,8 @@ pub struct Pages {
     battery: prefs::Battery,
     /// An `open` on its way, and what to say when it worked.
     opening: Option<(Receiver<Result<(), String>>, String)>,
+    /// A `diagnostics.get` on its way; its text goes to the clipboard when it arrives.
+    diagnostics: Option<Receiver<Result<String, String>>>,
 }
 
 impl Pages {
@@ -39,6 +41,7 @@ impl Pages {
             font_filter: String::new(),
             battery: prefs::Battery::new(),
             opening: None,
+            diagnostics: None,
         }
     }
 
@@ -62,6 +65,19 @@ impl Pages {
                 }
                 Err(mpsc::TryRecvError::Empty) => ui.ctx().request_repaint_after(Duration::from_millis(100)),
                 Err(mpsc::TryRecvError::Disconnected) => self.opening = None,
+            }
+        }
+        if let Some(rx) = &self.diagnostics {
+            match rx.try_recv() {
+                Ok(said) => {
+                    self.notice = Some(said.map(|text| {
+                        ui.ctx().copy_text(text);
+                        "Diagnostics copied".to_string()
+                    }));
+                    self.diagnostics = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => ui.ctx().request_repaint_after(Duration::from_millis(100)),
+                Err(mpsc::TryRecvError::Disconnected) => self.diagnostics = None,
             }
         }
         match &self.notice {
@@ -590,6 +606,25 @@ impl Pages {
         section(ui, "Waiting to post");
         note(ui, "Nothing waits here: M2 has no offline queue. A post that fails keeps your drafts and verdict on this Mac, to copy or retry.");
         self.data_folder(ui);
+        ui.add_space(theme::SPACE_2);
+        section(ui, "Diagnostics");
+        note(ui, "The app version, macOS, forge sign-ins and the last log lines, with secrets masked, to paste into a report.");
+        if ui.add_enabled(self.diagnostics.is_none(), egui::Button::new("Copy diagnostics")).clicked() {
+            self.copy_diagnostics();
+        }
+    }
+
+    /// `diagnostics.get` on a worker thread (it asks the forge CLIs), then its `text` on the clipboard.
+    fn copy_diagnostics(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let said = pr_craft_engine::run("diagnostics.get", &Value::Null).map_err(crate::fail).and_then(|answer| {
+                answer["text"].as_str().map(String::from).ok_or_else(|| "diagnostics.get answered without text (E-ENCODE)".to_string())
+            });
+            // The page may have closed first; nobody is left to tell.
+            let _ = tx.send(said);
+        });
+        self.diagnostics = Some(rx);
     }
 
     fn data_folder(&mut self, ui: &mut Ui) {

@@ -15,7 +15,7 @@ pub const TOO_LARGE: &str = "too large to show here";
 
 /// The bytes of `path` at commit `sha`, or `None` when the commit has no such file (the base side of an added
 /// file, the head side of a deleted one). A file over [`MAX_BLOB`] is an error saying [`TOO_LARGE`]. Blocks on the CLI.
-pub fn blob(change: &ChangeRef, sha: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+pub fn blob(change: &ChangeRef, sha: &str, path: &str) -> Result<Option<Vec<u8>>, crate::ForgeError> {
     let (cli, args) = match change.forge {
         Forge::GitHub => ("gh", github_args(&change.repo, sha, path)),
         Forge::GitLab => ("glab", gitlab_args(&change.repo, sha, path)),
@@ -59,12 +59,12 @@ fn not_found(stderr: &str) -> bool {
 
 /// Runs the CLI and reads at most `cap` bytes of its output; past that it stops the CLI and says [`TOO_LARGE`].
 #[cfg(test)]
-fn fetch(cli: &str, args: &[String], cap: usize) -> Result<Option<Vec<u8>>, String> {
+fn fetch(cli: &str, args: &[String], cap: usize) -> Result<Option<Vec<u8>>, crate::ForgeError> {
     fetch_on("", cli, args, cap)
 }
 
 /// The same, aimed at one server (see `crate::command`).
-fn fetch_on(host: &str, cli: &str, args: &[String], cap: usize) -> Result<Option<Vec<u8>>, String> {
+fn fetch_on(host: &str, cli: &str, args: &[String], cap: usize) -> Result<Option<Vec<u8>>, crate::ForgeError> {
     let mut child = crate::command(host, cli)
         .args(args)
         .process_group(0)
@@ -74,7 +74,7 @@ fn fetch_on(host: &str, cli: &str, args: &[String], cap: usize) -> Result<Option
         .spawn()
         .map_err(|e| format!("{cli} could not run: {e}"))?;
     let (Some(stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        return Err(format!("{cli} gave no output to read"));
+        return Err(format!("{cli} gave no output to read").into());
     };
     // A CLI that never answers is killed with what it started, which closes the pipes and ends the read below.
     let deadline = crate::bounded::watch(&child, crate::CALL_LIMIT);
@@ -93,7 +93,7 @@ fn fetch_on(host: &str, cli: &str, args: &[String], cap: usize) -> Result<Option
     }
     let status = child.wait().map_err(|e| format!("{cli} could not run: {e}"))?;
     if deadline.fired() {
-        return Err(format!("{cli} did not answer in {} seconds and was stopped", crate::CALL_LIMIT.as_secs()));
+        return Err(format!("{cli} did not answer in {} seconds and was stopped", crate::CALL_LIMIT.as_secs()).into());
     }
     read.map_err(|e| format!("could not read {cli}'s output: {e}"))?;
     let stderr = errors.join().unwrap_or_default();
@@ -102,7 +102,7 @@ fn fetch_on(host: &str, cli: &str, args: &[String], cap: usize) -> Result<Option
     } else if not_found(&stderr) {
         Ok(None)
     } else {
-        Err(format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim()))
+        Err(crate::ForgeError::exited(format!("`{cli} {}` failed: {}", args.join(" "), stderr.trim()), &stderr))
     }
 }
 
@@ -135,7 +135,7 @@ mod tests {
     fn output_past_the_cap_is_refused_and_output_within_it_is_kept() {
         let ten = ["-c".to_string(), "head -c 10 /dev/zero".to_string()];
         assert_eq!(fetch("sh", &ten, 10), Ok(Some(vec![0; 10])));
-        assert_eq!(fetch("sh", &ten, 9), Err(TOO_LARGE.to_string()));
+        assert_eq!(fetch("sh", &ten, 9), Err(TOO_LARGE.into()));
     }
 
     #[test]
@@ -143,6 +143,6 @@ mod tests {
         let failing = |message: &str| ["-c".to_string(), format!("echo '{message}' >&2; exit 1")];
         assert_eq!(fetch("sh", &failing("gh: Not Found (HTTP 404)"), 100), Ok(None));
         let error = fetch("sh", &failing("gh: Bad credentials (HTTP 401)"), 100).expect_err("a failure is an error");
-        assert!(error.contains("Bad credentials"), "{error}");
+        assert!(error.message.contains("Bad credentials"), "{error}");
     }
 }

@@ -35,11 +35,11 @@ impl Write {
 
     /// Sends it. Blocks on the CLI. A call that runs out of time says the change may already have been made
     /// ([`crate::outcome_unknown`]).
-    pub fn send(&self) -> Result<(), String> {
+    pub fn send(&self) -> Result<(), crate::ForgeError> {
         self.send_within(CALL_LIMIT)
     }
 
-    fn send_within(&self, limit: Duration) -> Result<(), String> {
+    fn send_within(&self, limit: Duration) -> Result<(), crate::ForgeError> {
         let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
         write_limited(&self.host, self.cli, &args, self.input.as_deref().map(str::as_bytes), limit).map(drop)
     }
@@ -90,16 +90,16 @@ struct GlId {
 }
 
 /// A login is letters, digits and `-_.`; anything else is refused before it reaches a URL.
-fn checked_login(login: &str) -> Result<&str, String> {
+fn checked_login(login: &str) -> Result<&str, crate::ForgeError> {
     if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
-        return Err(format!("{login:?} is not a login"));
+        return Err(format!("{login:?} is not a login").into());
     }
     Ok(login)
 }
 
 /// Makes `want` the change's reviewers. `current` is who is asked now (a reviewer who already reviewed is not asked, and stays).
 /// A set that is already right sends nothing. Blocks on the CLI.
-pub fn set_reviewers(change: &ChangeRef, current: &[String], want: &[String]) -> Result<usize, String> {
+pub fn set_reviewers(change: &ChangeRef, current: &[String], want: &[String]) -> Result<usize, crate::ForgeError> {
     for login in want {
         checked_login(login)?;
     }
@@ -129,7 +129,7 @@ pub fn set_reviewers(change: &ChangeRef, current: &[String], want: &[String]) ->
 
 /// The calls that add `add` to the change's labels and take `remove` off, relative to what they are now, so a label someone added
 /// since the reader looked is left alone.
-pub fn change_labels(change: &ChangeRef, add: &[String], remove: &[String]) -> Result<Vec<Write>, String> {
+pub fn change_labels(change: &ChangeRef, add: &[String], remove: &[String]) -> Result<Vec<Write>, crate::ForgeError> {
     if add.iter().chain(remove).any(|l| l.trim().is_empty()) {
         return Err("A label needs a name".into());
     }
@@ -163,7 +163,7 @@ pub fn change_labels(change: &ChangeRef, add: &[String], remove: &[String]) -> R
 }
 
 /// Replaces the change's labels with `labels`.
-pub fn set_labels(change: &ChangeRef, labels: &[String]) -> Result<Write, String> {
+pub fn set_labels(change: &ChangeRef, labels: &[String]) -> Result<Write, crate::ForgeError> {
     if labels.iter().any(|l| l.trim().is_empty()) {
         return Err("A label needs a name".into());
     }
@@ -192,7 +192,7 @@ pub struct MergeCall {
 }
 
 /// The merge as one call. GitLab merges with the method the project sets, so only a squash can be asked for; a rebase is refused.
-pub fn merge(change: &ChangeRef, call: &MergeCall) -> Result<Write, String> {
+pub fn merge(change: &ChangeRef, call: &MergeCall) -> Result<Write, crate::ForgeError> {
     if call.head_sha.trim().is_empty() {
         return Err("A merge must name the commit the reader saw, and none was given".into());
     }
@@ -253,7 +253,7 @@ pub fn cancel_auto(change: &ChangeRef) -> Write {
 }
 
 /// Re-runs one job. `check` is an id from `checks.list`.
-pub fn rerun(change: &ChangeRef, check: &str) -> Result<Write, String> {
+pub fn rerun(change: &ChangeRef, check: &str) -> Result<Write, crate::ForgeError> {
     let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
     match change.forge {
         Forge::GitHub => {
@@ -265,7 +265,7 @@ pub fn rerun(change: &ChangeRef, check: &str) -> Result<Write, String> {
         }
         Forge::GitLab => {
             if !digits(check) {
-                return Err(format!("{check:?} is not a GitLab job id"));
+                return Err(format!("{check:?} is not a GitLab job id").into());
             }
             Ok(Write::new(change, &["api", &format!("projects/{}/jobs/{check}/retry", project_path(&change.repo)), "--method", "POST"], None))
         }
@@ -333,7 +333,7 @@ fn gitlab_role(level: u32) -> &'static str {
     }
 }
 
-fn parse_people(forge: Forge, bytes: &[u8]) -> Result<Vec<Person>, String> {
+fn parse_people(forge: Forge, bytes: &[u8]) -> Result<Vec<Person>, crate::ForgeError> {
     Ok(match forge {
         Forge::GitHub => from_json::<Vec<GhPerson>>(bytes)?
             .into_iter()
@@ -347,7 +347,7 @@ fn parse_people(forge: Forge, bytes: &[u8]) -> Result<Vec<Person>, String> {
     })
 }
 
-fn parse_labels(bytes: &[u8]) -> Result<Vec<Label>, String> {
+fn parse_labels(bytes: &[u8]) -> Result<Vec<Label>, crate::ForgeError> {
     Ok(from_json::<Vec<RawLabel>>(bytes)?
         .into_iter()
         .map(|l| Label {
@@ -358,7 +358,7 @@ fn parse_labels(bytes: &[u8]) -> Result<Vec<Label>, String> {
         .collect())
 }
 
-fn one_page(host: &str, cli: &str, path: &str) -> Result<(Vec<u8>, bool), String> {
+fn one_page(host: &str, cli: &str, path: &str) -> Result<(Vec<u8>, bool), crate::ForgeError> {
     let bytes = run_on(host, cli, &["api", &format!("{path}per_page=100")])?;
     let full = from_json::<Vec<serde::de::IgnoredAny>>(&bytes)?.len() >= 100;
     Ok((bytes, full))
@@ -366,7 +366,7 @@ fn one_page(host: &str, cli: &str, path: &str) -> Result<(Vec<u8>, bool), String
 
 /// Who the change can ask to review: the repository's collaborators (GitHub, which refuses a login without push access) or the
 /// project's members (GitLab). One page. Blocks on the CLI.
-pub fn collaborators(change: &ChangeRef) -> Result<Page<Person>, String> {
+pub fn collaborators(change: &ChangeRef) -> Result<Page<Person>, crate::ForgeError> {
     let path = match change.forge {
         Forge::GitHub => format!("repos/{}/collaborators?", change.repo),
         Forge::GitLab => format!("projects/{}/members/all?", project_path(&change.repo)),
@@ -376,7 +376,7 @@ pub fn collaborators(change: &ChangeRef) -> Result<Page<Person>, String> {
 }
 
 /// The repository's labels. One page. Blocks on the CLI.
-pub fn labels_of(change: &ChangeRef) -> Result<Page<Label>, String> {
+pub fn labels_of(change: &ChangeRef) -> Result<Page<Label>, crate::ForgeError> {
     let path = match change.forge {
         Forge::GitHub => format!("repos/{}/labels?", change.repo),
         Forge::GitLab => format!("projects/{}/labels?", project_path(&change.repo)),
@@ -386,7 +386,7 @@ pub fn labels_of(change: &ChangeRef) -> Result<Page<Label>, String> {
 }
 
 /// Who is asked to review `change` now, read fresh.
-pub fn requested_now(change: &ChangeRef) -> Result<Vec<String>, String> {
+pub fn requested_now(change: &ChangeRef) -> Result<Vec<String>, crate::ForgeError> {
     Ok(mine::detail_on(change)?.mine.requested)
 }
 
@@ -455,7 +455,7 @@ mod tests {
         let body: Value = serde_json::from_str(plain.input.as_deref().expect("a body")).expect("json");
         assert_eq!(body["squash"], json!(false));
         assert!(body.get("merge_commit_message").is_some());
-        assert!(merge(&gl(), &call(MergeMethod::Rebase)).expect_err("refused").contains("project sets"));
+        assert!(merge(&gl(), &call(MergeMethod::Rebase)).expect_err("refused").message.contains("project sets"));
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn a_merge_without_the_commit_the_reader_saw_is_refused() {
         let call = MergeCall { head_sha: String::new(), ..call(MergeMethod::Squash) };
-        assert!(merge(&gh(), &call).expect_err("refused").contains("commit"));
+        assert!(merge(&gh(), &call).expect_err("refused").message.contains("commit"));
         assert!(merge(&gl(), &call).is_err());
     }
 
@@ -523,7 +523,7 @@ mod tests {
         let error = slow.send_within(Duration::from_millis(200)).expect_err("stopped");
         assert!(outcome_unknown(&error), "the reader is told to check the forge before sending it again: {error}");
         let refused = Write { cli: "false", host: String::new(), args: Vec::new(), input: None };
-        assert!(!outcome_unknown(&refused.send_within(Duration::from_secs(10)).expect_err("failed at once")), "a clean refusal wrote nothing");
+        assert!(!outcome_unknown(refused.send_within(Duration::from_secs(10)).expect_err("failed at once")), "a clean refusal wrote nothing");
     }
 
     #[test]
