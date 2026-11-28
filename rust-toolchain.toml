@@ -1,0 +1,5 @@
+# The toolchain CI and contributors build with, so clippy's lints are the same everywhere. Moving it is its own PR.
+[toolchain]
+channel = "1.100"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

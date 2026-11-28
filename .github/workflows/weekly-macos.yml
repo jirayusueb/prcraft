@@ -1,0 +1,27 @@
+name: Weekly macOS build
+
+# The alarm for the frozen craft-libs, egui and winit revisions (docs/designs/long-term-roadmap.md, D10): a release build
+# and the tests on the newest macOS runner image. `cargo xtask release` refuses while the latest run on main is not green.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Release build and tests (newest macOS)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: macOS version
+        run: sw_vers
+      - name: Release build
+        run: cargo build --release -p pr-craft -p pr-craft-cli
+      - name: Tests
+        run: cargo test --workspace --lib --bins --tests
