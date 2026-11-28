@@ -26,6 +26,14 @@ graph LR
 
 [docs/designs/long-term-roadmap.md](docs/designs/long-term-roadmap.md) takes the built milestones to a team of 3 to 8 engineers who each clear their daily queue without the forge web UI. It runs in five horizons, each closed by an exit line: H1 Prove (live writes, diagnostics, additive-only data), H2 Ship (.app, Releases, update check, quota safety), H3 Trial (5 days, banners, tally), H4 Cap (AI ceiling, worktree cleanup, pruning), H5 Extras (Visualize, Babysit, self-update). Nothing in it asks storytold for a change.
 
+| Horizon | Code (steps) | Exit line | Waits on |
+| --- | --- | --- | --- |
+| H1 Prove | built: additive-only data (3), error codes, log and `diagnostics.get` (4), tool resolver and version probe (5), ledger (6) | not met: no row in [docs/live-ledger.md](docs/live-ledger.md) has run | the user: sandbox PR and MR, a gitlab.com login, approval of each live write |
+| H2 Ship | built: in-repo CI on Rust 1.100 (8), update check and download (9), quota safety (10), bundle, release gate, About, [install steps](docs/install.md) (11) | not met | the mirror (7: the user picks the account), the first Release (approval), members chosen |
+| H3 Trial | built: `review/` split (12), persisted snapshots and GitLab 429 (13), tally and [trial protocol](docs/trial.md) (14), drafts on changed lines (15), banners (16) | not met | the 5-day trial |
+| H4 Cap | built: AI token estimate and ceiling (17), `checkout.remove` (18), pruning (19) | not checked on screen | a run of the app |
+| H5 Extras | not started | | each item's own design, after the trial |
+
 ## Rules every milestone keeps
 
 - Every user action is an engine command in `crates/engine` first, then a panel and a `pr-craft-cli` call (AGENTS.md rule 14). A milestone is not done while the CLI cannot do what the panel does.
