@@ -133,7 +133,7 @@ fn draw(svg: &str, width: u32, height: u32, fonts: &Fonts) -> Result<Rendered, S
     let pixmap = craft::svg::tree::draw::render(&tree, Transform::identity(), width, height, 0, BUDGET).map_err(|r| r.message)?;
     // The field is opaque, so premultiplied and straight pixels are the same.
     let rgba = pixmap.data().to_vec();
-    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
     let image = Image::from_u8(width, height, ChannelLayout::Rgb, rgb).map_err(|e| e.to_string())?;
     let png = craft::image_codecs::encode(&image, Format::Png, &EncodeOptions::default()).map_err(|e| e.to_string())?;
     Ok(Rendered { width, height, rgba, png })
@@ -183,7 +183,7 @@ mod tests {
     /// Pixels that are not the night field, and pixels that are near white (type).
     fn counts(rgba: &[u8]) -> (usize, usize) {
         let (mut ink, mut white) = (0, 0);
-        for p in rgba.chunks_exact(4) {
+        for p in rgba.as_chunks::<4>().0 {
             if p[..3] != [0x11, 0x11, 0x14] {
                 ink += 1;
             }

@@ -489,7 +489,15 @@ mod tests {
         view.local.body = "ok".into();
         let with_body = sheet.key(&view, &Stacked::Reading);
         assert_ne!(approved, with_body);
-        let draft = Draft { id: 1, path: "a.rs".into(), old_path: None, start: None, end: LineRef { old: None, new: Some(1) }, body: "x".into(), on_rendered: false };
+        let draft = Draft {
+            id: 1,
+            path: "a.rs".into(),
+            old_path: None,
+            start: None,
+            end: LineRef { old: None, new: Some(1) },
+            body: "x".into(),
+            on_rendered: false,
+        };
         view.local.drafts.push(draft);
         assert_ne!(with_body, sheet.key(&view, &Stacked::Reading));
     }

@@ -424,6 +424,7 @@ mod tests {
         use egui_kittest::Harness;
         use egui_kittest::kittest::{By, NodeT, Queryable};
         let mut harness = Harness::builder().with_size(vec2(400.0, 300.0)).build_ui(|ui| {
+            crate::prefs::glyphs_for_tests(ui.ctx());
             ui.label("under");
             show(ui.ctx());
         });
