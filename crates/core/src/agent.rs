@@ -83,6 +83,8 @@ pub struct EngineSettings {
     pub read: ReadRules,
     /// Per-repository read rules, by [`repo_key`]; they replace `read` whole for that repository.
     pub repo_read: BTreeMap<String, ReadRules>,
+    /// Estimated input tokens per local day past which `ai.review.start` refuses; `None` is no ceiling.
+    pub daily_token_ceiling: Option<u64>,
     #[serde(flatten, default)]
     pub extra: Extra,
 }
@@ -96,6 +98,7 @@ impl Default for EngineSettings {
             spawn: SpawnLimits::default(),
             read: ReadRules::default(),
             repo_read: BTreeMap::new(),
+            daily_token_ceiling: None,
             extra: Extra::default(),
         }
     }

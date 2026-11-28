@@ -196,6 +196,13 @@ pub struct EnginePatch {
     pub stuck: Option<StuckRules>,
     pub spawn: Option<SpawnLimits>,
     pub read: Option<ReadRules>,
+    /// Tokens per day; `null` removes the ceiling and `0` is refused.
+    #[serde(default, deserialize_with = "set_or_clear")]
+    pub daily_token_ceiling: Option<Option<u64>>,
+}
+
+fn set_or_clear<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u64>>, D::Error> {
+    Option::<u64>::deserialize(d).map(Some)
 }
 
 fn engine_set(env: &Env, patch: EnginePatch) -> Result<EngineView, CommandError> {
@@ -207,6 +214,10 @@ fn engine_set(env: &Env, patch: EnginePatch) -> Result<EngineView, CommandError>
     settings.stuck = patch.stuck.unwrap_or(settings.stuck);
     settings.spawn = patch.spawn.unwrap_or(settings.spawn);
     settings.read = patch.read.unwrap_or(settings.read);
+    settings.daily_token_ceiling = patch.daily_token_ceiling.unwrap_or(settings.daily_token_ceiling);
+    if settings.daily_token_ceiling == Some(0) {
+        return Err(invalid("the daily token ceiling must be above 0"));
+    }
     if settings.runs_at_once == 0 {
         return Err(invalid("runs at once must be at least 1"));
     }
@@ -760,6 +771,28 @@ fn prepare(settings: &EngineSettings, agents: &[Agent], source: &Source, options
     Ok((plan, prepared))
 }
 
+/// Roughly the input tokens of a prompt: its bytes over 4, rounded up.
+// shortcut: a tokenizer would be exact; upgrade if the ceiling must track the bill closely.
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
+}
+
+fn today() -> String {
+    pr_craft_core::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Refuses a review whose estimate would pass today's ceiling, else records it as used. Nothing is spawned before this.
+fn charge(env: &Env, settings: &EngineSettings, day: &str, tokens: u64) -> Result<(), CommandError> {
+    let _guard = lock();
+    let used = store::load_usage(&env.dir).map_err(CommandError::read)?.days.get(day).copied().unwrap_or(0);
+    if let Some(ceiling) = settings.daily_token_ceiling
+        && used.saturating_add(tokens) > ceiling
+    {
+        return Err(invalid(format!("Today's AI ceiling of {ceiling} tokens would be passed: {used} used, this review ≈{tokens}")));
+    }
+    store::add_usage(&env.dir, day, tokens).map_err(CommandError::write)
+}
+
 /// A fingerprint of a prompt: FNV-1a over its bytes, 16 hex digits. It detects a change, nothing more.
 fn prompt_hash(text: &str) -> String {
     let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3));
@@ -781,6 +814,8 @@ pub(crate) fn start_checked(env: &Env, source: &Source, options: &Options, expec
             return Err(invalid("the change moved since the preview; preview again"));
         }
     }
+    let tokens = prepared.iter().filter(|p| p.part.engine.wired()).map(|p| estimate_tokens(&p.prompt.text)).sum();
+    charge(env, &settings, &today(), tokens)?;
     let (mut ids, mut handles) = (Vec::new(), Vec::new());
     for Prepared { part, files, prompt } in prepared {
         let run = new_run(source, &part, &prompt);
@@ -816,6 +851,8 @@ pub struct PromptPreview {
     pub sent: bool,
     /// "not sent: engine not wired" when `sent` is false.
     pub note: Option<String>,
+    /// ≈ input tokens this prompt sends (bytes ÷ 4); 0 when `sent` is false.
+    pub estimated_tokens: u64,
 }
 
 /// `ai.review.preview`.
@@ -829,6 +866,12 @@ pub struct ReviewPreview {
     pub read: ReadRules,
     /// [`REDACTION_NOTICE`].
     pub notice: String,
+    /// ≈ input tokens the prompts above send in all.
+    pub estimated_tokens: u64,
+    /// Estimated tokens already started today.
+    pub used_today: u64,
+    /// The daily ceiling, when one is set.
+    pub daily_token_ceiling: Option<u64>,
 }
 
 fn preview_in(env: &Env, source: &Source, agent: Option<&str>, options: &Options) -> Result<ReviewPreview, CommandError> {
@@ -846,6 +889,7 @@ fn preview_in(env: &Env, source: &Source, agent: Option<&str>, options: &Options
         .map(|Prepared { part, prompt, .. }| {
             let sent = part.engine.wired();
             PromptPreview {
+                estimated_tokens: if sent { estimate_tokens(&prompt.text) } else { 0 },
                 agent: part.agent,
                 engine: part.engine,
                 files: prompt.sent,
@@ -864,7 +908,17 @@ fn preview_in(env: &Env, source: &Source, agent: Option<&str>, options: &Options
             "agent `{id}` has no files in this change, so it has no prompt to preview (use `general` for the general pass)"
         )));
     }
-    Ok(ReviewPreview { change: source.change.clone(), prompts, withheld: plan.skipped, read: plan.read, notice: REDACTION_NOTICE.to_string() })
+    let used_today = store::load_usage(&env.dir).map_err(CommandError::read)?.days.get(&today()).copied().unwrap_or(0);
+    Ok(ReviewPreview {
+        change: source.change.clone(),
+        estimated_tokens: prompts.iter().map(|p| p.estimated_tokens).sum(),
+        prompts,
+        withheld: plan.skipped,
+        read: plan.read,
+        notice: REDACTION_NOTICE.to_string(),
+        used_today,
+        daily_token_ceiling: settings.daily_token_ceiling,
+    })
 }
 
 fn new_run(source: &Source, part: &Part, prompt: &Prompt) -> Run {
@@ -1327,6 +1381,43 @@ index 0000000..3333333
         assert!(with.prompts.len() > preview.prompts.len(), "by default the left-over file is reviewed by a general run");
         let nothing = Options { agents: Some(Vec::new()), general: Some(false), ..Options::default() };
         assert!(preview_in(&env, &src, None, &nothing).is_err(), "no agent and no general pass is an error, not an empty start");
+    }
+
+    #[test]
+    fn the_estimate_is_the_prompt_bytes_over_four_rounded_up() {
+        assert_eq!((estimate_tokens(""), estimate_tokens("abcd"), estimate_tokens("abcde")), (0, 1, 2));
+        let root = root("estimate");
+        let env = env_with(&root, fake_engine(&root, &answering(&root, "[]")));
+        new_agent(&env, &["**/*.go"]);
+        let preview = preview_in(&env, &source(DIFF), None, &Options::default()).expect("preview");
+        let bytes = preview.prompts[0].prompt.len() as u64;
+        assert_eq!(preview.prompts[0].estimated_tokens, bytes.div_ceil(4));
+        assert_eq!(preview.estimated_tokens, bytes.div_ceil(4));
+    }
+
+    #[test]
+    fn a_start_past_the_daily_ceiling_is_refused_before_anything_runs() {
+        let root = root("ceiling");
+        let env = env_with(&root, fake_engine(&root, &answering(&root, "[]")));
+        new_agent(&env, &["**/*.go"]);
+        let src = source(DIFF);
+        let estimate = preview_in(&env, &src, None, &Options::default()).expect("preview").estimated_tokens;
+
+        assert!(command(&env, "ai.engine.set", &json!({ "daily_token_ceiling": 0 })).is_err(), "0 is not a ceiling");
+        command(&env, "ai.engine.set", &json!({ "daily_token_ceiling": estimate - 1 })).expect("set");
+        let refused = start_in(&env, &src, &detached()).expect_err("over the ceiling");
+        assert!(refused.to_string().contains("Today's AI ceiling of") && refused.to_string().contains("would be passed"), "{refused}");
+        assert!(runs(&env).is_empty() && !root.join("prompt.txt").exists(), "nothing was spawned");
+
+        command(&env, "ai.engine.set", &json!({ "daily_token_ceiling": estimate })).expect("set");
+        start_in(&env, &src, &waiting()).expect("exactly at the ceiling starts");
+        let again = start_in(&env, &src, &detached()).expect_err("the day's use counts");
+        assert!(again.to_string().contains(&format!("{estimate} used")), "{again}");
+        assert_eq!(runs(&env).len(), 1);
+
+        command(&env, "ai.engine.set", &json!({ "daily_token_ceiling": null })).expect("clear");
+        start_in(&env, &src, &waiting()).expect("no ceiling, no refusal");
+        assert_eq!(runs(&env).len(), 2);
     }
 
     #[test]

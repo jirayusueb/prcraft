@@ -359,6 +359,33 @@ pub fn save_ai(dir: &Path, settings: &EngineSettings) -> Result<(), String> {
     save(&dir.join("ai").join("settings.json"), settings)
 }
 
+/// Estimated input tokens the engine started, by local day (`YYYY-MM-DD`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    pub days: BTreeMap<String, u64>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+const USAGE_DAYS: usize = 31;
+
+pub fn load_usage(dir: &Path) -> Result<Usage, String> {
+    load(&dir.join("ai").join("usage.json"))
+}
+
+/// Adds `tokens` to `day` and keeps only the last 31 days.
+pub fn add_usage(dir: &Path, day: &str, tokens: u64) -> Result<(), String> {
+    let mut usage = load_usage(dir)?;
+    let today = usage.days.entry(day.to_string()).or_insert(0);
+    *today = today.saturating_add(tokens);
+    while usage.days.len() > USAGE_DAYS {
+        usage.days.pop_first();
+    }
+    stamp(dir)?;
+    save(&dir.join("ai").join("usage.json"), &usage)
+}
+
 pub fn load_agents(dir: &Path) -> Result<Vec<Agent>, String> {
     load(&dir.join("ai").join("agents.json"))
 }
@@ -729,5 +756,22 @@ mod tests {
         let kept: Vec<_> = file.entries.keys().cloned().collect();
         assert_eq!(kept, [key(Forge::GitHub, "github.com", 4), key(Forge::GitLab, "a.example", 1), key(Forge::GitLab, "b.example", 3)]);
         assert_eq!(file.entries[&key(Forge::GitLab, "a.example", 1)], entry(3, None), "a moved change takes the new read");
+    }
+
+    #[test]
+    fn usage_keeps_the_last_31_days_and_unknown_keys() {
+        let dir = temp_dir("usage");
+        fs::create_dir_all(dir.join("ai")).expect("dir");
+        fs::write(dir.join("ai/usage.json"), r#"{"days":{},"from_the_future":{"n":[1]}}"#).expect("seed");
+        for day in 1..=40 {
+            add_usage(&dir, &format!("2026-10-{day:02}"), 10).expect("add");
+        }
+        add_usage(&dir, "2026-10-40", 5).expect("add again");
+        let usage = load_usage(&dir).expect("load");
+        assert_eq!(usage.days.len(), 31);
+        assert_eq!(usage.days.keys().next().map(String::as_str), Some("2026-10-10"));
+        assert_eq!(usage.days["2026-10-40"], 15, "a day adds up");
+        assert_eq!(serde_json::to_value(&usage).expect("save")["from_the_future"], serde_json::json!({"n": [1]}));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
