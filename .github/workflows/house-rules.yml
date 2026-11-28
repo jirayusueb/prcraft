@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   house-rules:
-    uses: storytold/craft-common-actions/.github/workflows/house-rules.yml@main
+    # Pinned with ci.yml; the rules it compares against still come from craft-contrib main, by design.
+    uses: storytold/craft-common-actions/.github/workflows/house-rules.yml@3fe7aa009c15e57932497b5e6d00bf20f781e5ec
     with:
       rust: true
