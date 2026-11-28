@@ -5,10 +5,12 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use chrono::{DateTime, Local, Utc};
 use craft::egui::{self, RichText, ScrollArea, TextEdit, Ui};
 use pr_craft_core::keys::{self, Binding, Severity};
 use pr_craft_core::settings::{CodeColours, Density, DiffColours, IfChanged, Settings, Theme};
 use pr_craft_engine::keys::KeyRow;
+use pr_craft_engine::quota::HostQuota;
 use serde_json::{Value, json};
 
 use crate::components::{self, BannerKind, Pill, PillKind};
@@ -591,6 +593,9 @@ impl Pages {
         };
         let every = s.poll_every(on_battery == Some(true));
         live_label(ui, format!("Checking every {every} min now. {power}"), theme::pal(ui).graphite);
+        for line in guard_lines(every, &pr_craft_engine::quota::status(every, Utc::now())) {
+            live_label(ui, line, theme::pal(ui).graphite);
+        }
         let detail = format!("Every {} min while on battery power.", pr_craft_core::settings::BATTERY_POLL_MINUTES);
         if let Some(on) = switch(ui, "Slow down on battery", &detail, s.slower_on_battery) {
             self.set(ui, json!({ "slower_on_battery": on }));
@@ -726,5 +731,48 @@ mod tests {
         let share = row("review.share");
         assert!(flags(&share).iter().any(|f| f.starts_with("Also used elsewhere") && f.contains("Mail")), "{:?}", flags(&share));
         assert!(flags(&row("review.comment")).is_empty());
+    }
+}
+
+/// What the GitHub quota guard does, per host, when it differs from the chosen `every` minutes or has paused the host.
+fn guard_lines(every: u32, hosts: &[HostQuota]) -> Vec<String> {
+    let clock = |at: DateTime<Utc>| at.with_timezone(&Local).format("%H:%M");
+    let mut lines = Vec::new();
+    for host in hosts {
+        if let Some(until) = host.paused_until {
+            lines.push(format!("{}: Paused until {}: GitHub rate limit", host.host, clock(until)));
+        } else if host.effective_minutes != every {
+            lines.push(format!(
+                "{}: Polling every {} min to stay under 1,250 points an hour (\u{2248}{} points/h)",
+                host.host, host.effective_minutes, host.projected_per_hour
+            ));
+        }
+    }
+    lines
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    fn host(effective_minutes: u32, paused_until: Option<DateTime<Utc>>) -> HostQuota {
+        HostQuota {
+            host: "github.com".into(),
+            last_cost: 57,
+            projected_per_hour: 1140,
+            remaining: Some(900),
+            reset_at: paused_until,
+            effective_minutes,
+            paused_until,
+        }
+    }
+
+    #[test]
+    fn sync_says_what_the_guard_does_only_when_it_acts() {
+        assert!(guard_lines(5, &[host(5, None)]).is_empty());
+        assert_eq!(guard_lines(1, &[host(3, None)]), ["github.com: Polling every 3 min to stay under 1,250 points an hour (\u{2248}1140 points/h)"]);
+        let until: DateTime<Utc> = "2026-11-28T10:30:00Z".parse().expect("a time");
+        let lines = guard_lines(5, &[host(5, Some(until))]);
+        assert_eq!(lines, [format!("github.com: Paused until {}: GitHub rate limit", until.with_timezone(&Local).format("%H:%M"))]);
     }
 }

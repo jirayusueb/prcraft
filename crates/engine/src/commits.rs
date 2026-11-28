@@ -48,7 +48,7 @@ pub fn list(change: &ChangeRef) -> Result<CommitList, CommandError> {
 
 fn reviewed(change: &ChangeRef) -> Result<Option<Reviewed>, pr_craft_forge::ForgeError> {
     let me = turn_forge::my_login(change.forge, change.host_name())?;
-    let Some(snapshot) = turn_forge::snapshot(change, &me)? else { return Ok(None) };
+    let (Some(snapshot), _) = turn_forge::snapshot(change, &me)? else { return Ok(None) };
     let review = assess(&snapshot).review;
     let commit = review.commit.ok_or_else(|| format!("{} holds no commit your review was written on", change.forge.name()))?;
     Ok(Some(Reviewed { commit, state: review.state, submitted_at: review.submitted_at }))

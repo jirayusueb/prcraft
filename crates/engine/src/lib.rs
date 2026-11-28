@@ -8,6 +8,7 @@ pub mod local;
 pub mod log;
 pub mod mine;
 pub mod palette;
+pub mod quota;
 pub mod review;
 mod runner;
 pub mod settings;
@@ -58,6 +59,7 @@ const BASE: &[&str] = &[
     "share.render",
     "share.save",
     "share.copy",
+    "quota.status",
     "settings.get",
     "settings.set",
     "keys.list",
@@ -433,6 +435,7 @@ fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
         "share.copy" => Err(CommandError::Invalid(
             "share.copy puts the image on the clipboard of the running app; the CLI has no clipboard, use share.save to write a PNG".into(),
         )),
+        "quota.status" => Ok(serde_json::to_value(quota::status(settings::load()?.poll_minutes, Utc::now()))?),
         "settings.get" => Ok(serde_json::to_value(settings::get()?)?),
         "settings.set" => Ok(serde_json::to_value(settings::set(value)?)?),
         "keys.list" => Ok(serde_json::to_value(keys::list()?)?),

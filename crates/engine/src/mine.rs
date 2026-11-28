@@ -142,7 +142,7 @@ fn read_source(forge: Forge) -> MineSource {
     MineSource { forge, cli: forge.cli(), state }
 }
 
-type HostRead = (String, Result<(Vec<Mine>, bool), pr_craft_forge::ForgeError>);
+type HostRead = (String, Result<(Vec<Mine>, bool, Option<pr_craft_forge::RateLimit>), pr_craft_forge::ForgeError>);
 
 /// Joins per-host answers: Listed while any host answered (failures stay in `hosts`), Failed when none did.
 fn joined(answers: Vec<HostRead>, signed_out: Vec<String>) -> MineState {
@@ -153,7 +153,10 @@ fn joined(answers: Vec<HostRead>, signed_out: Vec<String>) -> MineState {
     let (mut changes, mut hosts, mut truncated) = (Vec::new(), Vec::new(), false);
     for (host, answer) in answers {
         match answer {
-            Ok((found, cut)) => {
+            Ok((found, cut, rate)) => {
+                if let Some(rate) = rate {
+                    crate::quota::record(&host, rate);
+                }
                 hosts.push(HostAnswer { host, listed: found.len(), truncated: cut, error: None });
                 truncated |= cut;
                 changes.extend(found);
@@ -675,7 +678,7 @@ mod tests {
     }
 
     fn row(host: &str, listed: Result<(usize, bool), &str>) -> HostRead {
-        (host.to_string(), listed.map(|(n, cut)| ((0..n as u64).map(tests_support::mine).collect(), cut)).map_err(ForgeError::from))
+        (host.to_string(), listed.map(|(n, cut)| ((0..n as u64).map(tests_support::mine).collect(), cut, None)).map_err(ForgeError::from))
     }
 
     #[test]

@@ -257,6 +257,29 @@ fn finished(cli: &str, args: &[&str], out: std::process::Output) -> Result<Vec<u
     }
 }
 
+/// What one GitHub GraphQL call cost and what is left of the hour's points (`rateLimit` in the answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimit {
+    pub cost: u32,
+    pub remaining: u32,
+    pub reset_at: DateTime<Utc>,
+}
+
+/// The `rateLimit` of a `gh api graphql` answer; `None` when it carries none.
+pub fn rate_limit(bytes: &[u8]) -> Option<RateLimit> {
+    #[derive(Deserialize)]
+    struct Data {
+        #[serde(rename = "rateLimit")]
+        rate_limit: Option<RateLimit>,
+    }
+    #[derive(Deserialize)]
+    struct Answer {
+        data: Option<Data>,
+    }
+    serde_json::from_slice::<Answer>(bytes).ok()?.data?.rate_limit
+}
+
 pub(crate) fn from_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ForgeError> {
     serde_json::from_slice(bytes).map_err(|e| ForgeError::from(format!("unexpected CLI output: {e}")))
 }
@@ -378,6 +401,16 @@ pub(crate) fn gitlab_change(mr: GitLabMr, host: &str) -> Change {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rate_limit_is_read_from_a_graphql_answer() {
+        let answer = br#"{"data":{"search":{"nodes":[]},"rateLimit":{"cost":57,"remaining":4943,"resetAt":"2026-11-28T10:00:00Z"}}}"#;
+        let limit = rate_limit(answer).expect("a rate limit");
+        assert_eq!((limit.cost, limit.remaining), (57, 4943));
+        assert_eq!(limit.reset_at.to_rfc3339(), "2026-11-28T10:00:00+00:00");
+        assert_eq!(rate_limit(br#"{"data":{"search":{}}}"#), None);
+        assert_eq!(rate_limit(b"[]"), None);
+    }
 
     #[test]
     fn each_failure_names_a_fix_for_that_forges_cli() {
