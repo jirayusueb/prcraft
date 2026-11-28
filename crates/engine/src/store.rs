@@ -11,7 +11,7 @@ use pr_craft_core::diff_view::LayoutOptions;
 use pr_craft_core::extra::Extra;
 use pr_craft_core::keys::Binding;
 use pr_craft_core::review::LocalReview;
-use pr_craft_core::run::Run;
+use pr_craft_core::run::{Run, RunState};
 use pr_craft_core::settings::Settings as AppSettings;
 use pr_craft_core::turn::Snapshot;
 use pr_craft_core::view::FileView;
@@ -189,8 +189,9 @@ pub fn save_views(dir: &Path, views: &BTreeMap<String, FileView>) -> Result<(), 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyState {
-    // shortcut: ids are kept for good, about 100 bytes per event; prune them when the file outgrows a few hundred KB.
     pub seen: BTreeSet<String>,
+    /// When each id was first seen (or first met by [`prune`], for ids saved before this field); ids older than 180 days are pruned.
+    pub seen_at: BTreeMap<String, DateTime<Utc>>,
     pub pause: Option<Pause>,
     /// Events that got a macOS banner, posted or failed, so none gets a second one.
     pub bannered: BTreeSet<String>,
@@ -393,6 +394,96 @@ pub fn load_agents(dir: &Path) -> Result<Vec<Agent>, String> {
 pub fn save_agents(dir: &Path, agents: &[Agent]) -> Result<(), String> {
     stamp(dir)?;
     save(&dir.join("ai").join("agents.json"), &agents)
+}
+
+const REVIEW_DAYS: i64 = 90;
+const KEEP_RUNS: usize = 500;
+const SEEN_DAYS: i64 = 180;
+
+/// Trims what only grows: empty review files untouched for 90 days, finished runs beyond the newest 500, and notification ids
+/// older than 180 days. Never removes a draft, a general comment, a verdict, a post that may have gone through, or a run that is
+/// still going. Never fails the caller: problems go to the log, with one line of counts.
+pub fn prune(dir: &Path, now: DateTime<Utc>) {
+    let reviews = prune_reviews(dir, now);
+    let runs = prune_runs(dir);
+    let seen = prune_seen(dir, now).unwrap_or_else(|error| {
+        crate::log::note(&format!("prune: notifications: {error}"));
+        0
+    });
+    if reviews + runs + seen > 0 {
+        crate::log::note(&format!("prune: removed {reviews} reviews, {runs} runs, {seen} seen ids"));
+    }
+}
+
+fn subdirs(path: &Path) -> Vec<PathBuf> {
+    fs::read_dir(path).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()
+}
+
+// shortcut: whether the change is closed is not checked against the forge, so age (file untouched 90 days) stands in for it; ask the forge when a closed date is stored.
+fn prune_reviews(dir: &Path, now: DateTime<Utc>) -> usize {
+    let cutoff = now - pr_craft_core::TimeDelta::days(REVIEW_DAYS);
+    let mut removed = 0;
+    for path in subdirs(&dir.join("reviews"))
+        .iter()
+        .flat_map(|forge| subdirs(forge))
+        .flat_map(|repo| fs::read_dir(repo).into_iter().flatten().flatten())
+        .map(|e| e.path())
+    {
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else { continue };
+        if DateTime::<Utc>::from(modified) >= cutoff {
+            continue;
+        }
+        match load::<LocalReview>(&path) {
+            Ok(review) if review.is_empty() && review.post_unknown.is_none() => match fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(error) => crate::log::note(&format!("prune: {}: {error}", path.display())),
+            },
+            Ok(_) => {}
+            Err(error) => crate::log::note(&format!("prune: {error}")),
+        }
+    }
+    removed
+}
+
+fn prune_runs(dir: &Path) -> usize {
+    let (runs, _) = list_runs(dir);
+    let finished = |r: &&Run| matches!(r.state, RunState::Done | RunState::Failed | RunState::Stopped | RunState::Killed);
+    let mut removed = 0;
+    // `list_runs` is newest first, so what follows the first 500 finished runs is the oldest.
+    for run in runs.iter().filter(finished).skip(KEEP_RUNS) {
+        for extension in ["json", "lock", "signal"] {
+            let Ok(path) = run_file(dir, &run.id, extension) else { continue };
+            match fs::remove_file(&path) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => crate::log::note(&format!("prune: {}: {error}", path.display())),
+                _ => {}
+            }
+        }
+        removed += 1;
+    }
+    removed
+}
+
+fn prune_seen(dir: &Path, now: DateTime<Utc>) -> Result<usize, String> {
+    let Ok(_guard) = crate::turn::lock() else { return Err("the notification state is locked by a crash".into()) };
+    let mut state = load_notify(dir)?;
+    if state.seen.is_empty() && state.bannered.is_empty() && state.seen_at.is_empty() {
+        return Ok(0);
+    }
+    for id in state.seen.iter().chain(&state.bannered) {
+        state.seen_at.entry(id.clone()).or_insert(now);
+    }
+    let cutoff = now - pr_craft_core::TimeDelta::days(SEEN_DAYS);
+    let old: Vec<String> = state.seen_at.iter().filter(|(_, at)| **at < cutoff).map(|(id, _)| id.clone()).collect();
+    for id in &old {
+        state.seen.remove(id);
+        state.bannered.remove(id);
+        state.seen_at.remove(id);
+    }
+    save_notify(dir, &state)?;
+    Ok(old.len())
 }
 
 /// Run and agent ids become file names, so they are plain words only.
@@ -773,5 +864,120 @@ mod tests {
         assert_eq!(usage.days["2026-10-40"], 15, "a day adds up");
         assert_eq!(serde_json::to_value(&usage).expect("save")["from_the_future"], serde_json::json!({"n": [1]}));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn aged(path: &Path, days: u64) {
+        let file = fs::OpenOptions::new().write(true).open(path).expect("open");
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400)).expect("age");
+    }
+
+    fn change(number: u64) -> ChangeRef {
+        ChangeRef { forge: Forge::GitHub, repo: "acme/api".into(), number, host: None }
+    }
+
+    #[test]
+    fn prune_removes_only_old_empty_reviews() {
+        let dir = temp_dir("prune-reviews");
+        let draft = Draft {
+            id: 1,
+            path: "f.go".into(),
+            old_path: None,
+            start: None,
+            end: LineRef { old: None, new: Some(2) },
+            body: "keep me".into(),
+            on_rendered: true,
+        };
+        let unknown = LocalReview { post_unknown: Some("timed out".into()), ..LocalReview::default() };
+        let drafted = LocalReview { drafts: vec![draft], ..LocalReview::default() };
+        for (n, review) in [(1, LocalReview::default()), (2, drafted), (3, unknown), (4, LocalReview::default())] {
+            save_review(&dir, &change(n), &review).expect("save");
+            if n != 4 {
+                aged(&review_path(&dir, &change(n)), 100);
+            }
+        }
+        prune(&dir, Utc::now());
+        let there = |n| review_path(&dir, &change(n)).exists();
+        assert_eq!([there(1), there(2), there(3), there(4)], [false, true, true, true]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_500_finished_runs_and_every_running_one() {
+        use pr_craft_core::agent::{Engine, SpawnLimits};
+        use pr_craft_core::review::Anchor;
+        use pr_craft_core::run::RunAgent;
+        let dir = temp_dir("prune-runs");
+        let base = Utc::now() - pr_craft_core::TimeDelta::days(1);
+        let run = |id: String, state, minutes: i64| Run {
+            id,
+            change: change(1),
+            change_title: String::new(),
+            agent: RunAgent { id: None, name: "General review".into() },
+            engine: Engine::ClaudeCode,
+            state,
+            started: base + pr_craft_core::TimeDelta::minutes(minutes),
+            ended: None,
+            last_output: None,
+            pid: None,
+            pid_start: None,
+            owner_pid: 1,
+            owner_start: None,
+            anchor: Anchor { head_sha: "h".into(), base_sha: None, start_sha: None },
+            files: Vec::new(),
+            skipped: Vec::new(),
+            redactions: 0,
+            limits: SpawnLimits::default(),
+            tree: Vec::new(),
+            drafts: Vec::new(),
+            dropped: 0,
+            long_step: false,
+            stopping: false,
+            retries: 0,
+            error: None,
+            tail: Vec::new(),
+            extra: Extra::default(),
+        };
+        for i in 0..503 {
+            create_run(&dir, &run(format!("r{i}"), RunState::Done, i)).expect("save");
+        }
+        create_run(&dir, &run("live".into(), RunState::Running, -10_000)).expect("save");
+        send_signal(&dir, "r0", Signal::Stop).expect("signal");
+        prune(&dir, Utc::now());
+        let left: Vec<String> = list_runs(&dir).0.into_iter().map(|r| r.id).collect();
+        assert_eq!(left.len(), 501);
+        assert!(left.contains(&"live".to_string()));
+        for gone in ["r0", "r1", "r2"] {
+            assert!(!left.contains(&gone.to_string()));
+            assert!(!dir.join("runs").join(format!("{gone}.lock")).exists() && read_signal(&dir, gone).is_none());
+        }
+        assert!(left.contains(&"r3".to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_ages_seen_ids_out_after_180_days_and_stamps_the_rest() {
+        let dir = temp_dir("prune-seen");
+        let now = Utc::now();
+        let mut state = NotifyState::default();
+        for id in ["old", "undated"] {
+            state.seen.insert(id.to_string());
+        }
+        state.bannered.insert("old".into());
+        state.seen_at.insert("old".into(), now - pr_craft_core::TimeDelta::days(181));
+        save_notify(&dir, &state).expect("save");
+        prune(&dir, now);
+        let after = load_notify(&dir).expect("load");
+        assert_eq!(after.seen.iter().collect::<Vec<_>>(), ["undated"]);
+        assert!(after.bannered.is_empty());
+        assert_eq!(after.seen_at.keys().collect::<Vec<_>>(), ["undated"]);
+        assert_eq!(after.seen_at["undated"], now);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_on_a_missing_dir_does_nothing() {
+        let dir = temp_dir("prune-missing");
+        prune(&dir, Utc::now());
+        assert!(!dir.exists());
     }
 }

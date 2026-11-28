@@ -77,6 +77,13 @@ pub(crate) fn record_in(dir: &Path, id: &str, params: &Value, result: &Result<Va
     let _ = append_in(dir, &line(id, params, result, took), LIMIT);
 }
 
+/// Logs one free-form line (the engine's own housekeeping) when [`install`] has run.
+pub(crate) fn note(text: &str) {
+    if let Some(dir) = dir() {
+        let _ = append_in(dir, &format!("{} {text}", now()), LIMIT);
+    }
+}
+
 /// Logs one finished command when [`install`] has run.
 pub(crate) fn record(id: &str, params: &Value, result: &Result<Value, CommandError>, took: Duration) {
     if let Some(dir) = dir() {
