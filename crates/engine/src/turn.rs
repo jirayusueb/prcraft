@@ -491,7 +491,14 @@ pub fn seen(ids: Vec<String>) -> Result<usize, CommandError> {
     let dir = store::data_dir().map_err(CommandError::read)?;
     let _guard = lock()?;
     let mut state: NotifyState = store::load_notify(&dir).map_err(CommandError::read)?;
-    let added = ids.into_iter().filter(|id| state.seen.insert(id.clone())).count();
+    let now = Utc::now();
+    let added = ids
+        .into_iter()
+        .filter(|id| {
+            state.seen_at.entry(id.clone()).or_insert(now);
+            state.seen.insert(id.clone())
+        })
+        .count();
     store::save_notify(&dir, &state).map_err(CommandError::write)?;
     Ok(added)
 }

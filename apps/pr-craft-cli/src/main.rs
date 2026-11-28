@@ -51,6 +51,7 @@ fn run(id: &str, params: &Value) -> Result<Value, String> {
 
 fn main() -> ExitCode {
     pr_craft_engine::log::install();
+    pr_craft_engine::prune_local_data();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(id) = args.first() else {
         eprintln!("usage: pr-craft-cli <command> [params-json]\ncommands: {}", pr_craft_engine::COMMANDS.join(", "));

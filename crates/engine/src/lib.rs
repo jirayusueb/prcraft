@@ -620,6 +620,14 @@ fn failed(forge: Forge, error: String) -> InboxSource {
     InboxSource { forge, cli: forge.cli(), state: SourceState::Failed { error } }
 }
 
+/// Trims old local data once, at start of an app or of the CLI. Never fails: problems go to the log.
+pub fn prune_local_data() {
+    match store::data_dir() {
+        Ok(dir) => store::prune(&dir, pr_craft_core::Utc::now()),
+        Err(error) => log::note(&format!("prune: {error}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
