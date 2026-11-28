@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{Engine, SpawnLimits, StuckRules};
+use crate::extra::Extra;
 use crate::review::{Anchor, LineRef};
 use crate::{ChangeRef, DateTime, Utc};
 
@@ -185,6 +186,8 @@ pub struct Run {
     pub error: Option<String>,
     /// The last lines the engine printed, oldest first.
     pub tail: Vec<String>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 /// How many output lines a run keeps for the Activity window.
@@ -323,6 +326,7 @@ mod tests {
             retries: 0,
             error: None,
             tail: Vec::new(),
+            extra: Extra::default(),
         }
     }
 
@@ -397,5 +401,13 @@ mod tests {
         assert_eq!(may_spawn(&tree, 0, &limits), Ok(()), "a refused spawn used no slot");
         tree.push(node(4, Some(0), 1, false, NodeStatus::Done));
         assert_eq!(may_spawn(&tree, 0, &limits), Err(Refusal::Extra { max: 2 }));
+    }
+
+    #[test]
+    fn a_run_keeps_keys_a_newer_build_wrote() {
+        let mut file = serde_json::to_value(run(Utc::now())).expect("encodes");
+        file["from_the_future"] = serde_json::json!("kept");
+        let loaded: Run = serde_json::from_value(file).expect("loads");
+        assert_eq!(serde_json::to_value(&loaded).expect("saves")["from_the_future"], "kept");
     }
 }

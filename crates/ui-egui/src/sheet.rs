@@ -474,6 +474,7 @@ mod tests {
             triggers: vec![Trigger::Manual],
             spawn: SpawnLimits::default(),
             runs_on: RunsOn::All,
+            extra: Default::default(),
         }
     }
 

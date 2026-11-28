@@ -712,6 +712,7 @@ mod tests {
             triggers: vec![Trigger::Manual],
             spawn: SpawnLimits::default(),
             runs_on: RunsOn::All,
+            extra: Default::default(),
         };
         let mut page = AgentsPage { agents: Ok(vec![saved.clone()]), selected: Some(0), form: None, status: None };
         page.form = Some(Editor::new(AgentForm::from_agent(&saved), Some("go".into())));

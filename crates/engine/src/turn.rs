@@ -381,13 +381,13 @@ pub fn pause(until: Option<DateTime<Utc>>, resume: bool) -> Result<PauseStatus, 
     if until.is_some_and(|until| until <= Utc::now()) {
         return Err(CommandError::Invalid("`until` is already past.".into()));
     }
-    set_pause(|_| (!resume).then_some(Pause { until }))
+    set_pause(|_| (!resume).then_some(Pause { until, extra: Default::default() }))
 }
 
 /// `notify.pause` with `toggle`: ends the pause that holds now, or starts one until resumed. It reads the stored
 /// state, so a screen showing an older state never flips the wrong way.
 pub fn toggle_pause() -> Result<PauseStatus, CommandError> {
-    set_pause(|now| if now.is_some() { None } else { Some(Pause { until: None }) })
+    set_pause(|now| if now.is_some() { None } else { Some(Pause { until: None, extra: Default::default() }) })
 }
 
 /// Loads the stored pause, lets `change` replace it (it sees the pause that holds now), and saves it.
@@ -543,9 +543,9 @@ mod tests {
     #[test]
     fn a_pause_holds_until_its_time_and_open_ended_holds_until_resumed() {
         let now = at(20);
-        assert!(active_pause(Some(Pause { until: None }), now).is_some());
-        assert!(active_pause(Some(Pause { until: Some(at(21)) }), now).is_some());
-        assert!(active_pause(Some(Pause { until: Some(at(19)) }), now).is_none());
+        assert!(active_pause(Some(Pause { until: None, extra: Default::default() }), now).is_some());
+        assert!(active_pause(Some(Pause { until: Some(at(21)), extra: Default::default() }), now).is_some());
+        assert!(active_pause(Some(Pause { until: Some(at(19)), extra: Default::default() }), now).is_none());
         assert!(active_pause(None, now).is_none());
     }
 }

@@ -318,6 +318,7 @@ fn agent_create(env: &Env, new: NewAgent) -> Result<Agent, CommandError> {
         triggers: new.triggers.unwrap_or_else(|| vec![Trigger::Manual]),
         spawn: new.spawn.unwrap_or(settings.spawn),
         runs_on: new.runs_on,
+        extra: Default::default(),
     };
     agents.push(agent.clone());
     store::save_agents(&env.dir, &agents).map_err(store_err)?;
@@ -907,6 +908,7 @@ fn new_run(source: &Source, part: &Part, prompt: &Prompt) -> Run {
         retries: 0,
         error: None,
         tail: Vec::new(),
+        extra: Default::default(),
     }
 }
 

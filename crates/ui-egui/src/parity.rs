@@ -182,6 +182,7 @@ fn review_screen_with(from_back: bool, inline: bool) -> (ReviewScreen, Runs) {
         next_id: 4,
         anchor: Some(anchor.clone()),
         post_unknown: None,
+        extra: Default::default(),
     };
     if !inline {
         // Frame 90 shows threads under the lines; the drafts that sit on other files stay in Your review.
@@ -227,6 +228,7 @@ fn agent(id: &str, name: &str, description: &str, engine: Engine, skills: &[&str
         triggers: vec![Trigger::ReviewRequested],
         spawn: SpawnLimits::default(),
         runs_on: RunsOn::All,
+        extra: Default::default(),
     }
 }
 
@@ -524,7 +526,7 @@ fn retry_view() -> ReviewView {
 }
 
 fn split_screen(options_open: bool) -> (ReviewScreen, Runs) {
-    let layout = LayoutOptions { split: true, hide_whitespace: true, word_highlight: true, wrap: false };
+    let layout = LayoutOptions { split: true, hide_whitespace: true, word_highlight: true, wrap: false, extra: Default::default() };
     (ReviewScreen::fixture(retry_view(), Vec::new(), false).with_layout(layout, options_open), Runs::default())
 }
 

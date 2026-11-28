@@ -979,6 +979,7 @@ pub(crate) mod tests {
             retries: 0,
             error: None,
             tail: Vec::new(),
+            extra: Default::default(),
         }
     }
 
@@ -1182,6 +1183,7 @@ pub(crate) mod tests {
             triggers: vec![Trigger::Manual],
             spawn: SpawnLimits::default(),
             runs_on: RunsOn::All,
+            extra: Default::default(),
         };
         let back = AgentForm::from_agent(&agent);
         assert_eq!((back.include.as_str(), back.exclude.as_str()), ("**/*.go", "*_test.go\nvendor/**"));
