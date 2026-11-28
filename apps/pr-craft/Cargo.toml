@@ -12,6 +12,6 @@ workspace = true
 
 [dependencies]
 pr-craft-ui-egui = { workspace = true }
-craft = { workspace = true, features = ["ui-app"] }
+craft = { workspace = true, features = ["ui-app", "window"] }
 # Screen-reader support (AGENTS.md rule 21): eframe hands the egui tree to the OS through AccessKit.
 eframe = { workspace = true, features = ["accesskit"] }

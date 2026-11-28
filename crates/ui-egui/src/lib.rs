@@ -43,6 +43,7 @@ use pr_craft_core::palette::{Facts, Screen, Target};
 use pr_craft_core::turn::Turn;
 use pr_craft_core::{Change, Forge};
 use pr_craft_engine::turn::{self, BackItem, BackSource, BackState, EventKind};
+use pr_craft_engine::ai::{EngineInfo, EngineView};
 use pr_craft_engine::{InboxSource, SourceState};
 use pr_craft_forge::Login;
 
@@ -97,6 +98,32 @@ pub struct PrCraftApp {
     panel: Option<panel::Panel>,
     /// The CI job log, over the inbox.
     checks: Option<checks::ChecksScreen>,
+    /// Which side panes show; the title bar's toggles and ⌃⌘[ ⌃⌘] flip them.
+    panes: Panes,
+    /// The AI engine in use and whether it can run, for the status bar.
+    engine: ai::Fetch<EngineInfo>,
+    /// Settings was open on the last frame: on leaving it the engine is read again, since Settings may have changed it.
+    in_settings: bool,
+}
+
+/// Which side panes show: the left (the inbox's sidebar, the review's Files) and the right (the reading pane, Your review).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Panes {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl Default for Panes {
+    fn default() -> Self {
+        Panes { left: true, right: true }
+    }
+}
+
+/// `ai.engine.get`: the engine the settings pick, with what it needs.
+fn engine_info() -> Result<EngineInfo, String> {
+    let value = pr_craft_engine::run("ai.engine.get", &serde_json::Value::Null).map_err(|e| e.to_string())?;
+    let view: EngineView = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    view.engines.into_iter().find(|info| info.engine == view.settings.engine).ok_or_else(|| "no AI engine is set".to_string())
 }
 
 struct Source {
@@ -170,6 +197,9 @@ impl PrCraftApp {
             mine: Forge::ALL.into_iter().map(|forge| mine::MineSync::start(ctx, forge)).collect(),
             panel: None,
             checks: None,
+            panes: Panes::default(),
+            in_settings: false,
+            engine: ai::Fetch::start(ctx, engine_info),
         }
     }
 
@@ -184,7 +214,13 @@ impl PrCraftApp {
                 changes: changes.iter().filter(|change| change.forge == forge).cloned().collect(),
                 truncated: false,
                 stacks_error: None,
-                hosts: Vec::new(),
+                hosts: vec![pr_craft_engine::HostAnswer {
+                    host: (if forge == Forge::GitHub { "github.com" } else { "gitlab.acme.dev" }).into(),
+                    listed: changes.iter().filter(|change| change.forge == forge).count(),
+                    truncated: false,
+                    error: None,
+                    account: (forge == Forge::GitHub).then(|| "mo.okafor".to_string()),
+                }],
                 signed_out: Vec::new(),
             }),
             refresh: None,
@@ -218,6 +254,15 @@ impl PrCraftApp {
             mine: Forge::ALL.into_iter().map(|forge| mine::MineSync::fixture(forge, Vec::new())).collect(),
             panel: None,
             checks: None,
+            panes: Panes::default(),
+            in_settings: false,
+            engine: ai::Fetch::Ready(EngineInfo {
+                engine: pr_craft_core::agent::Engine::ClaudeCode,
+                name: "Claude Code".into(),
+                wired: true,
+                program: Some("/usr/local/bin/claude".into()),
+                note: None,
+            }),
         }
     }
 
@@ -1205,7 +1250,7 @@ impl PrCraftApp {
         true
     }
 
-    /// ⌘, opens Settings and ⌥⌘J opens Activity, from any screen.
+    /// ⌘, opens Settings, ⌥⌘J Activity, ⌘K the palette, ? the shortcuts, and ⌃⌘[ ⌃⌘] hide or show the side panes, from any screen.
     fn global_keys(&mut self, ui: &Ui) {
         if keymap::consume(ui, "app.settings") {
             self.switch_overlay(Overlay::Settings(Box::new(settings::Settings::open(settings::Tab::Engine))));
@@ -1220,29 +1265,110 @@ impl PrCraftApp {
                 self.palette = Some(palette::Palette::open());
             }
         }
+        if keymap::consume(ui, "app.left_pane") {
+            self.panes.left = !self.panes.left;
+        }
+        if keymap::consume(ui, "app.right_pane") {
+            self.panes.right = !self.panes.right;
+        }
+        // `?` types a character, so it waits while a text field has focus.
+        if !ui.ctx().text_edit_focused() && keymap::consume(ui, "app.shortcuts") {
+            self.switch_overlay(Overlay::Settings(Box::new(settings::Settings::open(settings::Tab::Keyboard))));
+        }
+        if let Some(choice) = menu::take(ui.ctx(), "account") {
+            match choice.item {
+                "settings" => keymap::trigger(ui.ctx(), "app.settings"),
+                "activity" => keymap::trigger(ui.ctx(), "app.activity"),
+                "shortcuts" => keymap::trigger(ui.ctx(), "app.shortcuts"),
+                _ => {}
+            }
+        }
     }
 
-    /// The title bar: the app's fixed items on the right, the trail on the left where no screen draws its own.
+    /// The account the forge CLIs act as: the first signed-in host's, GitHub first.
+    fn account(&self) -> Option<&str> {
+        self.sources.iter().find_map(|source| match &source.sync {
+            Sync::Done(SourceState::Listed { hosts, .. }) => hosts.iter().find_map(|h| h.account.as_deref()),
+            _ => None,
+        })
+    }
+
+    /// What the side panes are on the screen shown now, for the toggles' names.
+    fn pane_names(&self) -> (&'static str, &'static str) {
+        if self.review.is_some() && matches!(self.overlay, Overlay::None) { ("Files pane", "Your review panel") } else { ("Sidebar", "Reading pane") }
+    }
+
+    /// The title bar (frame 79): the left-pane toggle after the traffic lights, the screen's trail; on the right the screen's
+    /// actions, then the new-notification pill, when the sources were read, the account and the right-pane toggle.
     fn title_bar(&mut self, ui: &mut Ui, bar: &mut Bar) {
-        let mut want = None;
         let p = theme::pal(ui);
         let wide = bar.width() >= theme::WIDE_WINDOW;
+        let (left_name, right_name) = self.pane_names();
+        let mut notifications = false;
         bar.right(ui, |ui| {
-            if components::title_action(ui, "Settings", &keymap::label(ui, "app.settings")).clicked() {
-                want = Some(Overlay::Settings(Box::new(settings::Settings::open(settings::Tab::Engine))));
+            ui.spacing_mut().item_spacing.x = 12.0;
+            if components::pane_toggle(ui, true, self.panes.right, right_name, &keymap::label(ui, "app.right_pane")).clicked() {
+                self.panes.right = !self.panes.right;
             }
-            match activity::pill_ui(ui, &self.runs) {
-                activity::PillAct::None => {}
-                activity::PillAct::Popover => self.popover = !self.popover,
-                activity::PillAct::Activity => want = Some(Overlay::Activity(Box::new(activity::Activity::new()))),
+            let login = self.account();
+            // No account read: the button says "You" whole (D12), not two letters of it.
+            let initials: String = match login {
+                Some(login) => login.chars().filter(|c| c.is_alphanumeric()).take(2).flat_map(char::to_uppercase).collect(),
+                None => "You".into(),
+            };
+            let name = match login {
+                Some(login) => format!("{initials}, account {login}: Settings and Activity"),
+                None => "You: Settings and Activity".into(),
+            };
+            let login = login.unwrap_or("You");
+            let account = components::account_button(ui, &initials, &name);
+            if account.clicked() || (account.has_focus() && keymap::pressed(ui, "app.context_menu")) {
+                let key = |id: &str| keymap::label(ui, id);
+                let item = |id: &'static str, label: &str, key: String| menu::Entry::Item(menu::Item::new(id, label).key(key));
+                menu::open(
+                    ui.ctx(),
+                    menu::Spec {
+                        owner: "account",
+                        target: String::new(),
+                        header: Some(login.to_string()),
+                        at: menu::below(account.rect),
+                        entries: vec![
+                            item("settings", "Settings", key("app.settings")),
+                            item("activity", "Activity", key("app.activity")),
+                            menu::Entry::Rule,
+                            item("shortcuts", "Shortcuts", key("app.shortcuts")),
+                        ],
+                        restore: Some(account.id),
+                    },
+                );
             }
             if wide {
                 components::tag(ui, components::TagKind::Neutral, &self.sync_text());
             }
             if let Some(notes) = self.notifications.as_ref().filter(|n| n.unseen > 0) {
-                components::status_pill(ui, p.ember, &format!("{} new", notes.unseen));
+                notifications = components::status_pill(ui, p.ember, &format!("{} new", notes.unseen)).clicked();
+            }
+            // The task pill shows only while a run goes; Activity is in the account menu and on ⌥⌘J.
+            if activity::pill_ui(ui, &self.runs) == activity::PillAct::Popover {
+                self.popover = !self.popover;
             }
         });
+        bar.left(ui, |ui| {
+            if components::pane_toggle(ui, false, self.panes.left, left_name, &keymap::label(ui, "app.left_pane")).clicked() {
+                self.panes.left = !self.panes.left;
+            }
+        });
+        bar.advance(28.0 + 20.0);
+        if notifications {
+            // The same guards as any other way out: a busy review waits, unsaved Settings stay.
+            if self.review.as_ref().is_some_and(|review| review.busy()) {
+                self.runs.status = Some(Err(review::WAIT_FOR_FORGE.into()));
+            } else if self.switch_overlay(Overlay::None) {
+                self.review = None;
+                self.checks = None;
+                self.show(Inbox::Notifications);
+            }
+        }
         ui.ctx().request_repaint_after(Duration::from_secs(30));
         if (self.review.is_none() && self.checks.is_none()) || !matches!(self.overlay, Overlay::None) {
             let place = match &self.overlay {
@@ -1268,9 +1394,6 @@ impl PrCraftApp {
             };
             bar.left(ui, |ui| components::breadcrumb(ui, trail));
         }
-        if let Some(overlay) = want {
-            self.switch_overlay(overlay);
-        }
     }
 
     /// How long ago the sources were last asked, for the title bar.
@@ -1284,31 +1407,76 @@ impl PrCraftApp {
         }
     }
 
-    /// The status bar: one dot and a few words per source.
-    fn status_bar(&self, ui: &mut Ui, bar: &Bar) {
+    /// The status bar (frame 79): each forge host and the AI engine with a dot for its state; the palette and the shortcuts on
+    /// the right. How many changes wait is in each host's tooltip.
+    fn status_bar(&mut self, ui: &mut Ui, bar: &mut Bar) {
         let p = theme::pal(ui);
+        self.engine.poll();
+        let in_settings = matches!(self.overlay, Overlay::Settings(_));
+        if std::mem::replace(&mut self.in_settings, in_settings) && !in_settings {
+            self.engine = ai::Fetch::start(ui.ctx(), engine_info);
+        }
+        let (mut palette, mut shortcuts) = (false, false);
+        bar.right(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            shortcuts = components::status_hint(ui, "Shortcuts", &keymap::label(ui, "app.shortcuts")).clicked();
+            palette = components::status_hint(ui, "Command palette", &keymap::label(ui, "app.palette")).clicked();
+        });
         bar.left(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
             for source in &self.sources {
                 let cli = source.forge.cli();
-                let (colour, text) = match &source.sync {
-                    Sync::Checking(_) => (p.haze, format!("{cli} · syncing")),
-                    Sync::Done(state @ SourceState::Listed { changes, truncated, hosts, .. }) => {
-                        let waiting = format!("{cli} · {}{} waiting", changes.len(), if *truncated { "+" } else { "" });
-                        match hosts.iter().filter(|h| h.error.is_some()).count() {
-                            0 => (p.moss, waiting),
-                            failed => {
-                                debug_assert!(state.incomplete());
-                                (p.rose, format!("{waiting} · {failed} host{} failed", if failed == 1 { "" } else { "s" }))
-                            }
+                let mark = components::ConnMark::Forge(source.forge);
+                match &source.sync {
+                    Sync::Checking(_) => {
+                        components::connection(ui, p.haze, mark, &format!("{cli} · syncing"));
+                    }
+                    Sync::Done(SourceState::Listed { hosts, .. }) => {
+                        // The state is in the words, not only the dot (rule 21), and the reason in the tooltip.
+                        for host in hosts {
+                            let (colour, state, tip) = match &host.error {
+                                None => (p.moss, "", format!("{} waiting{}", host.listed, if host.truncated { " or more" } else { "" })),
+                                Some(error) => (p.rose, " · not read", format!("Not read: {error}")),
+                            };
+                            components::connection(ui, colour, mark, &format!("{cli} · {}{state}", host.host)).on_hover_text(tip);
                         }
                     }
-                    Sync::Done(SourceState::Paused { .. }) => (p.ember, format!("{cli} · paused")),
-                    Sync::Done(SourceState::Failed { .. }) => (p.rose, format!("{cli} · sync failed")),
-                };
-                components::connection(ui, colour, &text);
+                    Sync::Done(SourceState::Paused { login }) => {
+                        let fix = match login {
+                            Login::LoggedOut { fix } | Login::CliMissing { fix } => fix.clone(),
+                            Login::Failed { error } => error.clone(),
+                            Login::LoggedIn => String::new(),
+                        };
+                        components::connection(ui, p.ember, mark, &format!("{cli} · paused")).on_hover_text(fix);
+                    }
+                    Sync::Done(SourceState::Failed { error }) => {
+                        components::connection(ui, p.rose, mark, &format!("{cli} · sync failed")).on_hover_text(error.clone());
+                    }
+                }
+            }
+            let engine = components::ConnMark::Engine;
+            match &self.engine {
+                ai::Fetch::Ready(info) if info.wired && info.program.is_some() => {
+                    components::connection(ui, p.moss, engine, &info.name);
+                }
+                ai::Fetch::Ready(info) => {
+                    let label = format!("{} · {}", info.name, if info.program.is_none() { "not found" } else { "not available" });
+                    components::connection(ui, p.ember, engine, &label).on_hover_text(info.note.clone().unwrap_or_default());
+                }
+                ai::Fetch::Failed(error) => {
+                    components::connection(ui, p.rose, engine, "AI engine · not read").on_hover_text(error.clone());
+                }
+                ai::Fetch::Loading(_) | ai::Fetch::Idle => {
+                    components::connection(ui, p.haze, engine, "AI engine");
+                }
             }
         });
+        if palette {
+            keymap::trigger(ui.ctx(), "app.palette");
+        }
+        if shortcuts {
+            keymap::trigger(ui.ctx(), "app.shortcuts");
+        }
     }
 
     /// The window: title bar, body, status bar. The body is Settings, Activity, a review, or the inbox.
@@ -1323,8 +1491,8 @@ impl PrCraftApp {
         let mut title = components::title_bar(ui);
         self.title_bar(ui, &mut title);
         let body = ui.allocate_space(egui::vec2(avail.x, (avail.y - theme::TITLE_BAR_HEIGHT - theme::STATUS_BAR_HEIGHT).max(0.0))).1;
-        let status = components::status_bar(ui);
-        self.status_bar(ui, &status);
+        let mut status = components::status_bar(ui);
+        self.status_bar(ui, &mut status);
         let mut inner = ui.new_child(UiBuilder::new().id_salt("body").max_rect(body).layout(Layout::top_down(Align::Min)));
         inner.set_clip_rect(body);
         inner.spacing_mut().item_spacing = spacing;
@@ -1339,7 +1507,10 @@ impl PrCraftApp {
             return;
         }
         if let Some(screen) = &mut self.review {
-            match screen.ui(ui, &mut self.runs, title) {
+            let change = screen.change();
+            let waits = |c: &Change| c.forge == change.forge && c.repo == change.repo && c.number == change.number && c.host == change.host;
+            let your_turn = self.changes.iter().any(waits);
+            match screen.ui(ui, &mut self.runs, title, &mut self.panes, your_turn) {
                 review::Outcome::Stay => {}
                 review::Outcome::Back => {
                     self.review = None;
@@ -1387,13 +1558,17 @@ impl PrCraftApp {
         }
         let p = theme::pal(ui);
         let rect = ui.available_rect_before_wrap();
-        let side = egui::vec2(theme::SIDEBAR_WIDTH + 1.0, rect.height());
-        let list_width = (rect.width() - side.x - 1.0 - theme::DETAIL_MIN_WIDTH).clamp(theme::LIST_MIN_WIDTH, theme::LIST_WIDTH);
+        // A hidden pane takes no room (frame 39); the list grows into it.
+        let side = egui::vec2(if self.panes.left { theme::SIDEBAR_WIDTH + 1.0 } else { 0.0 }, rect.height());
+        let rest = rect.width() - side.x - 1.0;
+        let list_width = if self.panes.right { (rest - theme::DETAIL_MIN_WIDTH).clamp(theme::LIST_MIN_WIDTH, theme::LIST_WIDTH) } else { rest };
         let sidebar = Rect::from_min_size(rect.min, side);
         let list = Rect::from_min_size(sidebar.right_top(), egui::vec2(list_width + 1.0, rect.height()));
         let detail = Rect::from_min_max(list.right_top(), rect.right_bottom());
-        components::pane_at(ui, "sidebar", sidebar, p.hover, Margin { left: 12, right: 13, top: 4, bottom: 8 }, |ui| self.sidebar(ui));
-        components::seam_right(ui, sidebar);
+        if self.panes.left {
+            components::pane_at(ui, "sidebar", sidebar, p.hover, Margin { left: 12, right: 13, top: 4, bottom: 8 }, |ui| self.sidebar(ui));
+            components::seam_right(ui, sidebar);
+        }
         components::pane_at(ui, "list", list, p.paper, Margin::ZERO, |ui| match self.view {
             Inbox::Queue => self.list(ui),
             Inbox::BackToYou => self.back_list(ui),
@@ -1401,6 +1576,9 @@ impl PrCraftApp {
             Inbox::Notifications => self.notifications_list(ui),
             Inbox::LocalDrafts => self.local_drafts_list(ui),
         });
+        if !self.panes.right {
+            return;
+        }
         components::seam_right(ui, list);
         components::pane_at(ui, "detail", detail, p.panel, Margin { left: 32, right: 32, top: 22, bottom: 0 }, |ui| match self.view {
             Inbox::Queue => self.detail(ui, detail),
@@ -2026,6 +2204,9 @@ mod poll_tests {
             mine: Vec::new(),
             panel: None,
             checks: None,
+            panes: Panes::default(),
+            in_settings: false,
+            engine: ai::Fetch::Idle,
         };
         (app, held)
     }

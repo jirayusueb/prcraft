@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use chrono::{DateTime, Utc};
-use craft::egui::{self, Align, Context, FontId, Layout, Margin, OpenUrl, Rect, RichText, ScrollArea, TextEdit, Ui, UiBuilder};
+use craft::egui::{self, Align, Context, FontId, Layout, Margin, OpenUrl, Rect, Response, RichText, ScrollArea, TextEdit, Ui, UiBuilder};
 use pr_craft_core::ChangeRef;
 use pr_craft_core::commits as pick;
 use pr_craft_core::context::{self, Gap, Kind, Remaining, Reveal};
@@ -46,6 +46,26 @@ const LAYOUT_CONTROLS: f32 = 280.0;
 /// Said when another review would replace one whose post or hand-off is still on its way.
 pub(crate) const WAIT_FOR_FORGE: &str = "Wait for the forge to answer before leaving this review.";
 
+/// Why Visualize does nothing yet (rule 15). It shows AI-made pages, which wait on a safe way to show them (AGENTS.md rule 11).
+const VISUALIZE_BLOCKED: &str = "Visualize is not available yet: it shows pages an AI made, and PR Craft has no safe way to show them so far.";
+
+/// How the Files list is ordered (frame 24): by path, or the most changed lines first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum FileSort {
+    #[default]
+    Path,
+    Changes,
+}
+
+impl FileSort {
+    fn label(self) -> &'static str {
+        match self {
+            FileSort::Path => "Path",
+            FileSort::Changes => "Changes",
+        }
+    }
+}
+
 pub enum Outcome {
     Stay,
     Back,
@@ -54,16 +74,17 @@ pub enum Outcome {
     /// "Create an agent" on the AI review sheet: open Settings on a new agent.
     NewAgent,
 }
-/// Back and the trail of a change on the left of the title bar. True when Back was clicked.
-fn back_trail(ui: &mut Ui, bar: &Bar, change: &ChangeRef) -> bool {
+/// The review's trail (frame 79): ‹ Inbox, then PR Craft / repo / #n / the current file. The change number opens a menu with
+/// the change's other places: its forge page, a local checkout, its link. When the strip is short the file goes first, then
+/// "PR Craft", then the repository; the number is always whole. Returns whether Back was pressed, and the number crumb.
+fn back_trail(ui: &mut Ui, bar: &Bar, change: &ChangeRef, file: Option<&str>, menu: bool) -> (bool, Response) {
     let key = keymap::label(ui, "review.back");
     let place = format!("{}{}", change.forge.number_sigil(), change.number);
-    // The change number is always whole: when the strip is short, "PR Craft" goes first, then the repository.
     let room = bar.room();
-    let width = |brand: bool, repo: bool| {
+    let width = |brand: bool, repo: bool, file: Option<&str>| {
         let (gap, sep) = (8.0, components::text_width(ui, "/", 13.0));
         let back = components::text_width(ui, "‹ Inbox", 12.5) + 20.0;
-        let mut total = back + gap + 14.0;
+        let mut total = back + 20.0 + 14.0;
         let mut after_first = false;
         let mut add = |text_width: f32| {
             total += gap + if after_first { sep + gap } else { 0.0 } + text_width;
@@ -75,15 +96,21 @@ fn back_trail(ui: &mut Ui, bar: &Bar, change: &ChangeRef) -> bool {
         if repo {
             add(components::text_width(ui, &change.repo, 13.0));
         }
-        add(components::text_width(ui, &place, 13.0));
+        add(components::text_width(ui, &place, 13.0) + 12.0);
+        if let Some(file) = file {
+            add(components::text_width(ui, file, 13.0));
+        }
         total
     };
-    let (brand, repo) = [(true, true), (false, true), (false, false)].into_iter().find(|&(b, r)| width(b, r) <= room).unwrap_or((false, false));
+    let (brand, repo, file) = [(true, true, file), (true, true, None), (false, true, None), (false, false, None)]
+        .into_iter()
+        .find(|&(b, r, f)| width(b, r, f) <= room)
+        .unwrap_or((false, false, None));
     bar.left(ui, |ui| {
         let back = components::title_button(ui, "‹ Inbox", &key).clicked();
-        let trail: Vec<&str> = if repo { vec![change.repo.as_str(), place.as_str()] } else { vec![place.as_str()] };
-        components::breadcrumb_with(ui, brand, &trail);
-        back
+        ui.add_space(12.0);
+        let crumb = components::breadcrumb_menu(ui, brand, repo.then_some(change.repo.as_str()), &place, file, menu);
+        (back, crumb)
     })
 }
 
@@ -217,13 +244,25 @@ impl ReviewScreen {
         matches!(&self.state, State::Ready(ready) if ready.submitting.is_some() || ready.handing.is_some() || ready.writing.is_some())
     }
 
-    pub(crate) fn ui(&mut self, ui: &mut Ui, runs: &mut Runs, bar: &mut Bar) -> Outcome {
+    /// The change this review is of.
+    pub(crate) fn change(&self) -> ChangeRef {
+        self.change.clone()
+    }
+
+    /// Draws the review in `panes`, which it opens when something there needs the reader (an editor, a post, the hand-off).
+    /// `your_turn`: the change waits on the reader (it is in Review requested).
+    pub(crate) fn ui(&mut self, ui: &mut Ui, runs: &mut Runs, bar: &mut Bar, panes: &mut crate::Panes, your_turn: bool) -> Outcome {
         if std::mem::take(&mut self.leave) {
             return Outcome::Back;
         }
         if let State::Loading(rx) = &self.state {
             match rx.try_recv() {
-                Ok(Ok(view)) => self.state = State::Ready(Box::new(Ready::new(ui.ctx(), view, self.from_back))),
+                Ok(Ok(view)) => {
+                    let mut ready = Ready::new(ui.ctx(), view, self.from_back);
+                    // The header says how many commits the change merges (frame 79).
+                    ready.start_commits(ui.ctx());
+                    self.state = State::Ready(Box::new(ready));
+                }
                 Ok(Err(error)) => self.state = State::Failed(error),
                 Err(TryRecvError::Disconnected) => self.state = State::Failed("loading the change stopped".into()),
                 Err(TryRecvError::Empty) => {}
@@ -232,7 +271,7 @@ impl ReviewScreen {
         let p = theme::pal(ui);
         match &mut self.state {
             State::Loading(_) => {
-                let leave = back_trail(ui, bar, &self.change) || keymap::pressed(ui, "review.back");
+                let leave = back_trail(ui, bar, &self.change, None, false).0 || keymap::pressed(ui, "review.back");
                 components::padded(ui, Margin::same(24), |ui| {
                     components::label(ui, self.title.as_str(), 18.0, p.graphite);
                     components::note_sized(ui, format!("Fetching the files of {}…", self.change.reference()), 13.0, p.text_secondary);
@@ -240,7 +279,7 @@ impl ReviewScreen {
                 if leave { Outcome::Back } else { Outcome::Stay }
             }
             State::Failed(error) => {
-                let leave = back_trail(ui, bar, &self.change) || keymap::pressed(ui, "review.back");
+                let leave = back_trail(ui, bar, &self.change, None, false).0 || keymap::pressed(ui, "review.back");
                 let mut retry = false;
                 components::padded(ui, Margin::same(24), |ui| {
                     components::label(ui, self.title.as_str(), 18.0, p.graphite);
@@ -253,7 +292,7 @@ impl ReviewScreen {
                 }
                 if leave { Outcome::Back } else { Outcome::Stay }
             }
-            State::Ready(ready) => ready.ui(ui, runs, bar),
+            State::Ready(ready) => ready.ui(ui, runs, bar, panes, your_turn),
         }
     }
 
@@ -418,6 +457,25 @@ impl ReviewScreen {
         self
     }
 
+    /// The same review with its commits read and the picker shut, for the render tests.
+    #[cfg(test)]
+    pub(crate) fn with_commit_list(mut self, list: pr_craft_engine::commits::CommitList) -> Self {
+        if let State::Ready(ready) = &mut self.state {
+            ready.commits.list = Fetch::Ready(list);
+        }
+        self
+    }
+
+    /// The same review with the Files pane as a tree of folders (frame 23), for the tests of the folder rows.
+    #[cfg(test)]
+    pub(crate) fn with_tree(mut self) -> Self {
+        if let State::Ready(ready) = &mut self.state {
+            ready.files_list = false;
+            ready.refilter();
+        }
+        self
+    }
+
     /// The same review with the Open locally popover as `local` has it, and the first line of the first hunk selected so the
     /// editors have a place to open, for the render tests.
     #[cfg(test)]
@@ -531,6 +589,19 @@ enum Act {
     DismissPost,
     CopyMarkdown,
     OpenOnForge,
+    /// Visualize (⇧⌘V): not built, so it says why.
+    Visualize,
+    /// The menu of the change number in the trail: its forge page, Open locally, its link.
+    ChangeMenu {
+        at: egui::Pos2,
+        restore: Option<egui::Id>,
+    },
+    /// ⌘F: the Files filter takes focus.
+    FocusFilter,
+    /// ⌥T: the Files pane as a tree of folders or a flat list.
+    ToggleFilesLayout,
+    /// How the flat list is ordered.
+    SortFiles(FileSort),
     /// Open this URL, as the forge shows something PR Craft cannot.
     OpenUrl(String),
     Back,
@@ -689,6 +760,21 @@ struct Ready {
     /// File views: remembered choices, what each loaded and where the reader is in each.
     views: Views,
     block: Option<BlockTarget>,
+    /// The Files pane: a flat list (frame 79) or a tree of folders (frame 23), how the list is ordered, and whether the
+    /// filter field takes focus this frame (⌘F).
+    files_list: bool,
+    file_sort: FileSort,
+    focus_filter: bool,
+    /// The change waits on the reader: the diff header says "Your turn".
+    your_turn: bool,
+    /// The summary field shows (it holds text, or the reader opened it), and takes focus on this frame.
+    summary_open: bool,
+    focus_summary: bool,
+    /// Show the Files pane on the next frame: ⌘F or ⌥T asked for it.
+    want_files: bool,
+    /// Which reasons to show Your review held on the last frame: a reason that starts opens the pane once, and the reader may
+    /// hide it again.
+    needed_panel: [bool; 7],
     /// The AI review sheet (⌥⌘A), while it is open.
     sheet: Option<AiSheet>,
     /// The Share sheet (⇧⌘I), while it is open.
@@ -788,6 +874,14 @@ impl Ready {
             handing: None,
             inline: HashSet::new(),
             views: Views::new(remembered),
+            files_list: true,
+            file_sort: FileSort::default(),
+            focus_filter: false,
+            your_turn: false,
+            summary_open: false,
+            want_files: false,
+            needed_panel: [false; 7],
+            focus_summary: false,
             block: None,
             sheet: None,
             share: None,
@@ -820,6 +914,11 @@ impl Ready {
     fn refilter(&mut self) {
         self.patterns = self.filter_text.split([' ', ',']).filter(|p| !p.is_empty()).map(str::to_string).collect();
         self.visible = (0..self.view.files.len()).filter(|&i| filter::visible(&self.patterns, &self.view.files[i].path)).collect();
+        // The List may order by size (frame 24); the diff follows the same order, so J K N P walk what the list shows.
+        if self.files_list && self.file_sort == FileSort::Changes {
+            let files = &self.view.files;
+            self.visible.sort_by_key(|&i| std::cmp::Reverse(files[i].additions + files[i].deletions));
+        }
         if !self.visible.contains(&self.file) {
             self.file = self.visible.first().copied().unwrap_or(0);
             self.hunk = 0;
@@ -835,7 +934,26 @@ impl Ready {
         shows_hunks(file, self.viewed(file), &self.unfolded)
     }
 
-    fn ui(&mut self, ui: &mut Ui, runs: &mut Runs, bar: &mut Bar) -> Outcome {
+    fn ui(&mut self, ui: &mut Ui, runs: &mut Runs, bar: &mut Bar, panes: &mut crate::Panes, your_turn: bool) -> Outcome {
+        self.your_turn = your_turn || self.from_back;
+        // A hidden pane opens when what it holds starts to need the reader: the hand-off, a post and its outcome or question, a
+        // draft being edited there, the filter or the Files layout. Only the start opens it, so the reader can hide it again.
+        let needs = [
+            self.handoff.is_some(),
+            self.submitting.is_some(),
+            self.handing.is_some(),
+            self.confirm_post,
+            self.view.local.post_unknown.is_some(),
+            self.error.is_some(),
+            self.editing.as_ref().is_some_and(|(id, _)| !self.inline.contains(id)),
+        ];
+        if needs.iter().zip(self.needed_panel).any(|(&now, before)| now && !before) {
+            panes.right = true;
+        }
+        self.needed_panel = needs;
+        if std::mem::take(&mut self.want_files) {
+            panes.left = true;
+        }
         self.poll_submit();
         self.layers.poll();
         self.whole.poll();
@@ -871,16 +989,32 @@ impl Ready {
         let rect = ui.available_rect_before_wrap();
         let (files_width, panel_width) =
             if rect.width() < theme::WIDE_WINDOW { (theme::FILES_NARROW, theme::PANEL_NARROW) } else { (theme::FILES_WIDTH, theme::PANEL_WIDTH) };
-        let files = Rect::from_min_size(rect.min, egui::vec2(files_width + 1.0, rect.height()));
-        let panel = Rect::from_min_max(egui::pos2(rect.right() - panel_width - 1.0, rect.top()), rect.right_bottom());
+        // A folded pane takes no room (frame 38): the diff grows into it.
+        let files = Rect::from_min_size(rect.min, egui::vec2(if panes.left { files_width + 1.0 } else { 0.0 }, rect.height()));
+        let panel_left = if panes.right { rect.right() - panel_width - 1.0 } else { rect.right() };
+        let panel = Rect::from_min_max(egui::pos2(panel_left, rect.top()), rect.right_bottom());
         let diff = Rect::from_min_max(files.right_top(), panel.left_bottom());
-        components::pane_at(ui, "files", files, p.hover, Margin { left: 8, right: 9, top: 12, bottom: 8 }, |ui| self.files_pane(ui, &mut acts));
-        components::seam_right(ui, files);
-        components::pane_at(ui, "diff", diff, p.panel, Margin::ZERO, |ui| self.diff_pane(ui, diff.width(), &mut acts));
-        components::seam_right(ui, diff);
-        components::pane_at(ui, "review", panel, p.hover, Margin { left: 16, right: 16, top: 14, bottom: 12 }, |ui| {
-            self.review_pane(ui, &mut acts, runs);
+        if panes.left {
+            components::pane_at(ui, "files", files, p.hover, Margin { left: 8, right: 9, top: 12, bottom: 8 }, |ui| self.files_pane(ui, &mut acts));
+            components::seam_right(ui, files);
+        }
+        let panel_shown = panes.right;
+        components::pane_at(ui, "diff", diff, p.panel, Margin::ZERO, |ui| {
+            // With Your review hidden, its error or notice shows over the diff instead (rule 21: a live region).
+            if !panel_shown && let Some((kind, said)) = self.error.as_ref().map(|e| (BannerKind::Error, e)).or(self.notice.as_ref().map(|n| (BannerKind::Info, n))) {
+                components::padded(ui, Margin::symmetric(20, 8), |ui| {
+                    let said = components::banner(ui, kind, said, "");
+                    ui.ctx().accesskit_node_builder(said.id, |node| node.set_live(egui::accesskit::Live::Polite));
+                });
+            }
+            self.diff_pane(ui, diff.width(), &mut acts);
         });
+        if panes.right {
+            components::seam_right(ui, diff);
+            components::pane_at(ui, "review", panel, p.hover, Margin { left: 16, right: 16, top: 14, bottom: 12 }, |ui| {
+                self.review_pane(ui, &mut acts, runs);
+            });
+        }
         self.options_popover(ui.ctx(), diff, &mut acts);
         self.commits_popover(ui.ctx(), &mut acts);
         self.local_popover(ui.ctx(), &mut acts);
@@ -893,23 +1027,23 @@ impl Ready {
         self.apply(ui.ctx(), acts, runs)
     }
 
-    /// The review's part of the title bar: back and the trail on the left, the review's actions on the right.
+    /// The review's part of the title bar (frame 79): back and the trail on the left; Visualize, AI review and Share on the
+    /// right, after a divider. The change number in the trail opens the change's menu (its forge page, Open locally, its link).
     fn title_bar(&self, ui: &mut Ui, bar: &mut Bar, acts: &mut Vec<Act>) {
         let change = &self.view.change;
         bar.right(ui, |ui| {
-            if components::title_action(ui, &format!("Open on {}", change.forge.name()), "").clicked() {
-                acts.push(Act::OpenOnForge);
-            }
-            let open = components::title_action(ui, "Open", &keymap::label(ui, "review.open_locally"));
-            self.local.trigger.set(Some(open.rect));
-            if open.clicked() {
-                acts.push(Act::Local(LocalAct::Toggle));
-            }
-            if components::title_action(ui, "Share image", &keymap::label(ui, "review.share")).clicked() {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            components::bar_divider(ui);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if components::title_action(ui, "Share", &keymap::label(ui, "review.share")).clicked() {
                 acts.push(Act::OpenShare);
             }
             if components::title_action(ui, "AI review", &keymap::label(ui, "review.ai_review")).clicked() {
                 acts.push(Act::OpenSheet);
+            }
+            let visualize = components::title_action_unavailable(ui, "Visualize", &keymap::label(ui, "review.visualize"), VISUALIZE_BLOCKED);
+            if visualize.clicked() {
+                acts.push(Act::Visualize);
             }
             if self.from_back {
                 let text = if self.since_shown() { "All changes" } else { "Since your review" };
@@ -918,8 +1052,14 @@ impl Ready {
                 }
             }
         });
-        if back_trail(ui, bar, change) {
+        let file = self.view.files.get(self.file).filter(|_| self.visible.contains(&self.file)).map(|f| f.path.rsplit('/').next().unwrap_or(&f.path));
+        let (back, crumb) = back_trail(ui, bar, change, file, true);
+        if back {
             acts.push(Act::Back);
+        }
+        self.local.trigger.set(Some(crumb.rect));
+        if crumb.clicked() || (crumb.has_focus() && keymap::pressed(ui, "app.context_menu")) {
+            acts.push(Act::ChangeMenu { at: menu::below(crumb.rect), restore: Some(crumb.id) });
         }
     }
 
@@ -1210,6 +1350,9 @@ impl Ready {
             ("review.prev_draft", Act::StepDraft { forward: false }),
             ("review.comment", Act::OpenComposer),
             ("review.edit_draft", Act::EditHere),
+            ("review.visualize", Act::Visualize),
+            ("review.filter", Act::FocusFilter),
+            ("review.files_layout", Act::ToggleFilesLayout),
         ] {
             if pressed(id) {
                 acts.push(act);
@@ -1288,42 +1431,71 @@ impl Ready {
             }
             return;
         }
+        // Frame 79's measures, not the pane's item spacing: head, bar, 10, tools, 8, rows.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let counted: Vec<&FileDiff> = self.view.files.iter().filter(|f| !f.generated).collect();
         let viewed = counted.iter().filter(|f| self.viewed(f)).count();
-        components::padded(ui, Margin::symmetric(8, 0), |ui| {
-            ui.horizontal(|ui| {
-                components::label(ui, "Changes", 13.5, p.graphite);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    components::label(ui, format!("{viewed} of {} viewed", counted.len()), 12.0, p.text_tertiary);
-                });
-            });
-        });
-        ui.add_space(theme::SPACE_2);
-        let field = ui.add(TextEdit::singleline(&mut self.filter_text).hint_text("Filter: internal/** !*_test.go").desired_width(f32::INFINITY));
-        if field.changed() {
-            acts.push(Act::FilterChanged);
+        let total = counted.len();
+        if let Some(list) = components::files_head(ui, viewed, total, self.files_list)
+            && list != self.files_list
+        {
+            acts.push(Act::ToggleFilesLayout);
         }
-        ui.add_space(4.0);
-        let save = format!("Save for {}", self.view.change.repo);
-        if Pill::new(PillKind::Secondary, &save).small().max_width(ui.available_width()).show(ui).clicked() {
-            acts.push(Act::SaveFilter);
+        components::viewed_progress(ui, viewed, total);
+        ui.add_space(10.0);
+        let focus = std::mem::take(&mut self.focus_filter);
+        let key = keymap::label(ui, "review.filter");
+        // The List has an order to choose (frame 24); the Tree is in folder order (frame 23).
+        let full = ui.available_width();
+        let width = if self.files_list { full - 96.0 } else { full };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if components::filter_field(ui, &mut self.filter_text, width, &key, focus).changed() {
+                acts.push(Act::FilterChanged);
+            }
+            if self.files_list {
+                let select = components::select_button(ui, self.file_sort.label(), "Order files by", 90.0);
+                if select.clicked() || (select.has_focus() && keymap::pressed(ui, "app.context_menu")) {
+                    let item = |sort: FileSort| menu::Entry::Item(menu::Item::new(sort.label(), sort.label()).checked(sort == self.file_sort));
+                    menu::open(
+                        ui.ctx(),
+                        menu::Spec {
+                            owner: "sort",
+                            target: String::new(),
+                            header: Some("Order files by".into()),
+                            at: menu::below(select.rect),
+                            entries: vec![item(FileSort::Path), item(FileSort::Changes)],
+                            restore: Some(select.id),
+                        },
+                    );
+                }
+            }
+        });
+        // The glob filter saves per repository; the button shows while what is typed differs from what is saved.
+        if self.patterns != self.view.filter {
+            ui.add_space(4.0);
+            let save = format!("Save for {}", self.view.change.repo);
+            if Pill::new(PillKind::Quiet, &save).small().max_width(ui.available_width()).show(ui).clicked() {
+                acts.push(Act::SaveFilter);
+            }
         }
         if !self.patterns.is_empty() {
             let hidden = self.view.files.len() - self.visible.len();
-            components::note(
-                ui,
-                format!("{} of {} · {hidden} hidden", self.visible.len(), components::files_word(self.view.files.len())),
-                p.text_secondary,
-            );
+            components::note(ui, format!("{} of {} · {hidden} hidden", self.visible.len(), components::files_word(self.view.files.len())), p.text_secondary);
         }
-        ui.add_space(theme::SPACE_2);
+        ui.add_space(8.0);
+        let threads: Vec<&str> = match &self.threads {
+            Fetch::Ready(list) => list.threads.iter().map(|t| t.path.as_str()).collect(),
+            _ => Vec::new(),
+        };
+        let comments = |path: &str| self.view.local.drafts.iter().filter(|d| d.path == path).count() + threads.iter().filter(|t| **t == path).count();
         ScrollArea::vertical().id_salt("files").show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = 0.0;
             let mut folder = None;
             for &i in &self.visible {
                 let file = &self.view.files[i];
                 let (dir, name) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
-                if folder != Some(dir) {
+                if !self.files_list && folder != Some(dir) {
                     folder = Some(dir);
                     if !dir.is_empty() {
                         ui.add_space(4.0);
@@ -1344,10 +1516,22 @@ impl Ready {
                         }
                     }
                 }
-                if !dir.is_empty() && self.folded.contains(dir) {
+                if !self.files_list && !dir.is_empty() && self.folded.contains(dir) {
                     continue;
                 }
-                if components::review_file_row(ui, name, i == self.file, self.viewed(file), file.additions, file.deletions).clicked() {
+                let row = components::FileRow {
+                    name,
+                    dir: self.files_list.then_some(dir),
+                    current: i == self.file,
+                    viewed: self.viewed(file),
+                    comments: comments(&file.path),
+                    adds: file.additions,
+                    dels: file.deletions,
+                };
+                let out = components::file_row(ui, &row);
+                if out.check.clicked() {
+                    acts.push(Act::ToggleViewed(i));
+                } else if out.row.clicked() {
                     acts.push(Act::GoFile(i));
                 }
             }
@@ -1374,16 +1558,24 @@ impl Ready {
                 } else {
                     let meta = &self.view.meta;
                     components::label(ui, meta.title.as_str(), 15.0, p.graphite);
-                    let (adds, dels) = self.view.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
+                    // Frame 79: who wants to merge what into where. The commit count shows once the commits are read.
+                    let commits = match self.commits.ready().map(|list| list.commits.len()) {
+                        Some(1) => " 1 commit".to_string(),
+                        Some(n) => format!(" {n} commits"),
+                        None => String::new(),
+                    };
                     let line = format!(
-                        "{} · {} → {} · +{adds} −{dels} in {} · {}",
+                        "{} wants to merge{commits} into {} · {}",
                         meta.author,
+                        meta.base_branch,
+                        components::files_word(self.view.files.len())
+                    );
+                    components::note_sized(ui, line, 12.0, p.text_tertiary).on_hover_text(format!(
+                        "{} → {} · {}",
                         meta.head_branch,
                         meta.base_branch,
-                        components::files_word(self.view.files.len()),
                         self.view.change.reference()
-                    );
-                    components::note_sized(ui, line, 12.0, p.text_tertiary);
+                    ));
                 }
             });
             if controls {
@@ -1391,21 +1583,33 @@ impl Ready {
             }
         });
         components::rule(ui);
-        components::padded(ui, Margin::symmetric(20, 6), |ui| {
-            let trigger = ui.horizontal(|ui| {
-                let at = components::title_action(ui, &self.commits.summary(), &keymap::label(ui, "review.commits"));
-                if at.clicked() {
-                    acts.push(Act::Commit(CommitAct::Toggle));
+        // The strip under the header holds the commit pick, the stack and a read-only view's hint; frame 79 has none of them,
+        // so it shows only when one of them has something to say. ⇧C opens the commit pick from anywhere.
+        let hint = self.hint_line(ui);
+        // A stack that could not be checked says so in the strip (rule 15).
+        let strip = self.commits.picked.is_some()
+            || self.commits.open
+            || self.layers().len() > 1
+            || matches!(self.layers, Fetch::Failed(_))
+            || !hint.is_empty();
+        if strip {
+            components::padded(ui, Margin::symmetric(20, 6), |ui| {
+                let trigger = ui.horizontal(|ui| {
+                    let at = components::title_action(ui, &self.commits.summary(), &keymap::label(ui, "review.commits"));
+                    if at.clicked() {
+                        acts.push(Act::Commit(CommitAct::Toggle));
+                    }
+                    at.rect
+                });
+                self.commits.trigger = Some(trigger.inner);
+                self.stack_strip(ui, acts);
+                if !hint.is_empty() {
+                    components::note(ui, hint, p.text_tertiary);
                 }
-                at.rect
             });
-            self.commits.trigger = Some(trigger.inner);
-            self.stack_strip(ui, acts);
-            let hint = self.hint_line(ui);
-            if !hint.is_empty() {
-                components::note(ui, hint, p.text_tertiary);
-            }
-        });
+        } else {
+            self.commits.trigger = Some(Rect::from_min_size(avail.min + egui::vec2(20.0, 40.0), egui::vec2(160.0, 24.0)));
+        }
         if readonly {
             self.readonly_body(ui, width, acts);
             self.focus = Focus::None;
@@ -1814,11 +2018,14 @@ impl Ready {
             ScrollArea::vertical().id_salt("review-pane").auto_shrink([false, false]).show(ui, |ui| {
                 self.drafts_pane(ui, acts);
                 self.ai_panel(ui, acts);
-                ui.add_space(theme::SPACE_3);
-                match activity::runs_panel(ui, runs, &self.view.change) {
-                    PanelAct::None => {}
-                    PanelAct::RunAgain => acts.push(Act::OpenSheet),
-                    PanelAct::Details(id) => acts.push(Act::Details(id)),
+                // The change's AI runs, once there are some; AI review (⌥⌘A) in the title bar starts the first.
+                if runs.of(&self.view.change).next().is_some() {
+                    ui.add_space(theme::SPACE_3);
+                    match activity::runs_panel(ui, runs, &self.view.change) {
+                        PanelAct::None => {}
+                        PanelAct::RunAgain => acts.push(Act::OpenSheet),
+                        PanelAct::Details(id) => acts.push(Act::Details(id)),
+                    }
                 }
                 if !pinned {
                     ui.add_space(theme::SPACE_3);
@@ -1831,41 +2038,30 @@ impl Ready {
         }
     }
 
-    /// The rows of the Keys panel: what the keys do on this screen, with the caps the reader set.
+    /// The rows of the Keys panel (frame 79): the four keys of reading a change, then at most one that the screen's state
+    /// adds. Every other key is on the Shortcuts page (?), and each action shows its own key where it is drawn.
     fn key_rows(&self, ui: &Ui) -> Vec<(Vec<String>, String)> {
         let caps = |ids: &[&str]| ids.iter().map(|id| keymap::label(ui, id)).collect::<Vec<_>>();
-        let mut rows = vec![
-            (caps(&["review.next_hunk", "review.prev_hunk"]), "Next or previous hunk".to_string()),
-            (caps(&["review.next_file", "review.prev_file"]), "Next or previous file".to_string()),
-        ];
+        let mut rows = vec![(caps(&["review.next_hunk", "review.prev_hunk"]), "Next or previous hunk".to_string())];
         // A read-only view has nothing to comment on, keep or mark viewed; its own hint says how to leave it.
         if self.readonly() {
+            rows.push((caps(&["review.next_file", "review.prev_file"]), "Next or previous file".to_string()));
             return rows;
         }
-        rows.push((caps(&["review.comment"]), "Comment on line".to_string()));
         rows.push((caps(&["review.viewed"]), "Mark file viewed".to_string()));
-        rows.push((caps(&["review.layout", "review.diff_options"]), "Unified or split, diff options".to_string()));
-        if matches!(&self.threads, Fetch::Ready(list) if !list.threads.is_empty()) {
-            rows.push((caps(&["review.next_thread", "review.prev_thread"]), "Next or previous thread".to_string()));
-            rows.push((caps(&["review.resolve_thread", "review.reply_thread"]), "Resolve or reply to the thread".to_string()));
-        }
-        rows.push((caps(&["review.expand_above", "review.expand_below"]), "Show more lines around the hunk".to_string()));
+        rows.push((caps(&["review.filter"]), "Filter files".to_string()));
+        rows.push((caps(&["review.comment"]), "Comment on line".to_string()));
+        let current = self.view.files.get(self.file).filter(|_| self.visible.contains(&self.file));
+        // An SVG's markup heading names its view key already (frame 79).
+        let views = current.is_some_and(|file| views::offered(file).len() > 1 && !self.views.is_svg(&file.path));
         if !self.ai_pending.is_empty() {
             rows.push((caps(&["review.keep_ai"]), "Keep suggestion".to_string()));
-            rows.push((caps(&["review.keep_ai_edit"]), "Keep suggestion and edit".to_string()));
-            rows.push((caps(&["review.discard_ai"]), "Discard suggestion".to_string()));
-            rows.push((caps(&["review.next_ai", "review.prev_ai"]), "Next or previous suggestion".to_string()));
-        }
-        if !self.layers().is_empty() {
-            rows.push((caps(&["review.whole_stack"]), "Whole stack".to_string()));
-        }
-        if self.from_back {
-            rows.push((caps(&["review.since_review"]), "Since your review".to_string()));
-        }
-        if let Some(file) = self.view.files.get(self.file).filter(|_| self.visible.contains(&self.file))
-            && views::offered(file).len() > 1
-        {
+        } else if matches!(&self.threads, Fetch::Ready(list) if !list.threads.is_empty()) {
+            rows.push((caps(&["review.next_thread", "review.prev_thread"]), "Next or previous thread".to_string()));
+        } else if views {
             rows.push((caps(&["review.toggle_source"]), "Rendered or source".to_string()));
+        } else if self.from_back {
+            rows.push((caps(&["review.since_review"]), "Since your review".to_string()));
         }
         rows
     }
@@ -1877,7 +2073,8 @@ impl Ready {
         ui.horizontal(|ui| {
             components::label(ui, "Your review", 13.5, p.graphite);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                components::label(ui, format!("{} drafts", local.drafts.len()), 12.0, p.text_tertiary);
+                let count = local.drafts.len();
+                components::label(ui, format!("{count} {}", if count == 1 { "draft" } else { "drafts" }), 12.0, p.text_tertiary);
             });
         });
         if local.drafts.is_empty() {
@@ -1909,30 +2106,18 @@ impl Ready {
             }
         }
         ui.spacing_mut().item_spacing.y = 3.0;
-        ui.add_space(4.0);
+        ui.add_space(14.0);
         components::rule(ui);
-        ui.add_space(8.0);
-        components::label(ui, "Summary", 12.0, p.text_secondary);
-        ui.add_space(4.0);
-        let summary = ui.add(
-            TextEdit::multiline(&mut self.body)
-                .desired_width(ui.available_width())
-                .desired_rows(theme::SUMMARY_ROWS)
-                .hint_text("General comment, posted with the verdict"),
-        );
-        if summary.lost_focus() && self.body != local.body {
-            acts.push(Act::SaveBody);
-        }
-        ui.add_space(theme::SPACE_3);
+        ui.add_space(14.0);
         components::label(ui, "Verdict", 12.0, p.text_secondary);
-        ui.add_space(6.0);
+        ui.add_space(4.0);
         for &verdict in Verdict::offered(self.view.change.forge) {
             if components::verdict_card(ui, local.verdict == verdict, verdict.word(), verdict_note(verdict)).clicked() {
                 acts.push(Act::Verdict(verdict));
             }
-            ui.add_space(4.0);
+            ui.add_space(3.0);
         }
-        ui.add_space(theme::SPACE_2);
+        ui.add_space(12.0);
         let busy = self.submitting.is_some();
         let submit = Pill::new(PillKind::Primary, if busy { "Posting…" } else { "Submit review" }).block().enabled(!busy);
         let submit = if busy { submit } else { submit.key(ui, "review.submit") };
@@ -1944,9 +2129,33 @@ impl Ready {
             acts.push(Act::Submit);
         }
         self.post_unknown_note(ui, acts);
+        // Frame 79 ends the review at Submit. The summary and the hand-off stay under it: the summary opens from a quiet
+        // button until it holds text.
         ui.add_space(theme::SPACE_2);
-        if self.handoff.is_none() && Pill::new(PillKind::Secondary, "Hand off this review").key(ui, "review.hand_off").small().show(ui).clicked() {
-            acts.push(Act::OpenHandOff);
+        let open = !self.body.is_empty() || self.summary_open;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if !open && Pill::new(PillKind::Quiet, "Add a summary").small().show(ui).clicked() {
+                self.summary_open = true;
+                self.focus_summary = true;
+            }
+            if self.handoff.is_none() && Pill::new(PillKind::Quiet, "Hand off this review").key(ui, "review.hand_off").small().show(ui).clicked() {
+                acts.push(Act::OpenHandOff);
+            }
+        });
+        if open {
+            ui.add_space(4.0);
+            components::label(ui, "Summary, posted with the verdict", 12.0, p.text_secondary);
+            ui.add_space(4.0);
+            let summary = ui.add(
+                TextEdit::multiline(&mut self.body).desired_width(ui.available_width()).desired_rows(theme::SUMMARY_ROWS).hint_text("A general comment"),
+            );
+            if std::mem::take(&mut self.focus_summary) {
+                summary.request_focus();
+            }
+            if summary.lost_focus() && self.body != local.body {
+                acts.push(Act::SaveBody);
+            }
         }
         // Rule 21: the outcome of a post arrives away from focus, so it is a live region.
         let status = match (&self.error, &self.notice, busy) {
@@ -2543,8 +2752,10 @@ impl Ready {
                 }
                 Act::SaveFilter => {
                     let change = &self.view.change;
-                    engine::save_filter(change.forge, change.host.as_deref(), &change.repo, self.patterns.clone())
-                        .map(|()| self.notice = Some(format!("Filter saved for {}.", self.view.change.repo)))
+                    engine::save_filter(change.forge, change.host.as_deref(), &change.repo, self.patterns.clone()).map(|()| {
+                        self.view.filter = self.patterns.clone();
+                        self.notice = Some(format!("Filter saved for {}.", self.view.change.repo));
+                    })
                 }
                 Act::Verdict(verdict) => engine::compose(&self.view.change, verdict, self.body.clone()).map(|local| self.set_local(local)),
                 Act::SaveBody => engine::compose(&self.view.change, self.view.local.verdict, self.body.clone()).map(|local| self.set_local(local)),
@@ -2574,6 +2785,7 @@ impl Ready {
                     Ok(())
                 }
                 Act::FoldFolder(dir) => {
+                    self.show_tree();
                     self.folded.insert(dir);
                     Ok(())
                 }
@@ -2582,6 +2794,7 @@ impl Ready {
                     Ok(())
                 }
                 Act::FoldAll => {
+                    self.show_tree();
                     let dirs: Vec<String> =
                         self.visible.iter().filter_map(|&i| self.view.files.get(i)).map(|f| parent_dir(&f.path).to_string()).collect();
                     self.folded.extend(dirs.into_iter().filter(|d| !d.is_empty()));
@@ -2611,6 +2824,31 @@ impl Ready {
                 }
                 Act::OpenOnForge => {
                     ctx.open_url(OpenUrl::new_tab(&self.view.meta.url));
+                    Ok(())
+                }
+                Act::Visualize => {
+                    self.notice = Some(VISUALIZE_BLOCKED.to_string());
+                    Ok(())
+                }
+                Act::ChangeMenu { at, restore } => {
+                    self.open_change_menu(ctx, at, restore);
+                    Ok(())
+                }
+                Act::FocusFilter => {
+                    self.focus_filter = true;
+                    self.want_files = true;
+                    Ok(())
+                }
+                Act::ToggleFilesLayout => {
+                    self.files_list = !self.files_list;
+                    self.want_files = true;
+                    self.refilter();
+                    self.notice = Some(if self.files_list { "Files shown as a list." } else { "Files shown as a tree of folders." }.into());
+                    Ok(())
+                }
+                Act::SortFiles(sort) => {
+                    self.file_sort = sort;
+                    self.refilter();
                     Ok(())
                 }
             };
@@ -2730,17 +2968,20 @@ impl Ready {
         Ok(())
     }
 
-    /// The Unified/Split switch and the Diff options control, at the right of the diff header (frame 91).
+    /// The Your turn tag and the Unified/Split switch at the right of the diff header (frames 79, 91), with Diff options before them.
     fn layout_controls(&mut self, ui: &mut Ui, header: Rect, acts: &mut Vec<Act>) {
-        let rect = Rect::from_min_size(egui::pos2(header.right() - 20.0 - LAYOUT_CONTROLS, header.top() + 12.0), egui::vec2(LAYOUT_CONTROLS, 26.0));
+        let rect = Rect::from_min_size(egui::pos2(header.right() - 20.0 - LAYOUT_CONTROLS, header.top() + 19.0), egui::vec2(LAYOUT_CONTROLS, 26.0));
         let now = self.layout;
         let at = usize::from(self.split_on());
         let mut trigger = None;
         ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.spacing_mut().item_spacing.x = 10.0;
             let both = ["Unified".to_string(), "Split".to_string()];
             if let Some(picked) = components::segmented(ui, "layout", "Diff layout", &both, at) {
                 acts.push(Act::SetLayout(LayoutOptions { split: picked == 1, ..now }));
+            }
+            if self.your_turn {
+                components::tag(ui, TagKind::YourTurn, "Your turn");
             }
             let options = components::title_action(ui, "Diff options", &keymap::label(ui, "review.diff_options"));
             trigger = Some(options.rect);
@@ -3524,6 +3765,15 @@ impl Ready {
         (files.iter().filter(|f| self.viewed(f)).count(), files.len())
     }
 
+    /// Folders fold only in the Tree (frame 23), so folding from the List shows the Tree first and says so.
+    fn show_tree(&mut self) {
+        if self.files_list {
+            self.files_list = false;
+            self.refilter();
+            self.notice = Some("Files shown as a tree of folders, so the folder can fold.".into());
+        }
+    }
+
     /// ← → ⇧V ⌥← and ⌥⌘C act on the folder of the current file.
     fn folder_keys(&self, ui: &Ui, acts: &mut Vec<Act>) {
         let Some(file) = self.current_file() else { return };
@@ -3633,6 +3883,28 @@ impl Ready {
         );
     }
 
+    /// The change number's menu (frame 79 keeps the title bar to three actions): its forge page, a local checkout, its link.
+    fn open_change_menu(&mut self, ctx: &Context, at: egui::Pos2, restore: Option<egui::Id>) {
+        let change = &self.view.change;
+        use menu::Entry::{Item, Rule};
+        menu::open(
+            ctx,
+            menu::Spec {
+                owner: "change",
+                header: Some(change.reference()),
+                target: self.view.meta.url.clone(),
+                at,
+                restore,
+                entries: vec![
+                    Item(menu::Item::new("forge", format!("Open on {}", change.forge.name()))),
+                    Item(menu::Item::new("locally", "Open locally").key(keymap::label(ctx, "review.open_locally"))),
+                    Rule,
+                    Item(menu::Item::new("link", "Copy link")),
+                ],
+            },
+        );
+    }
+
     /// The menu of a folder of the Files list (frame 105). Review this folder with AI, Open in VS Code and Reveal in Finder are
     /// not here: the AI sheet has no folder scope, and the editors open the checkout, not a folder of it.
     fn open_folder_menu(&mut self, ctx: &Context, dir: String, at: egui::Pos2, restore: Option<egui::Id>) {
@@ -3693,6 +3965,18 @@ impl Ready {
                 "locally" => Some(Act::Local(LocalAct::Toggle)),
                 "whitespace" => Some(Act::SetLayout(LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now })),
                 "viewed" => Some(Act::ToggleViewed(self.file)),
+                _ => None,
+            };
+            acts.extend(act);
+        }
+        if let Some(choice) = menu::take(ctx, "sort") {
+            acts.extend([FileSort::Path, FileSort::Changes].into_iter().find(|s| s.label() == choice.item).map(Act::SortFiles));
+        }
+        if let Some(choice) = menu::take(ctx, "change") {
+            let act = match choice.item {
+                "forge" => Some(Act::OpenOnForge),
+                "locally" => Some(Act::Local(LocalAct::Toggle)),
+                "link" => Some(Act::CopyText { text: choice.target, said: "Copied the change's link.".into() }),
                 _ => None,
             };
             acts.extend(act);

@@ -349,11 +349,13 @@ impl<'a> Pill<'a> {
             };
             ui.painter().rect(rect, radius(height / 2.0), dim(fill), Stroke::new(stroke.width, dim(stroke.color)), StrokeKind::Inside);
             let centre = rect.center().y;
-            let start = if self.block { rect.center().x - content / 2.0 } else { rect.left() + 12.0 };
+            // A block pill (frame 79's Submit review) has its words at the left and its key cap at the right end.
+            let start = rect.left() + if self.block { 14.0 } else { 12.0 };
             let right = put(ui, label_galley(ui, dim(ink)), start, centre);
             if let Some(key) = &self.key {
                 let tone = if self.kind == PillKind::Primary { CapTone::Inverse } else { CapTone::Quiet };
-                paint_cap(ui, right + 6.0, centre, key, tone);
+                let at = if self.block { rect.right() - 8.0 - cap.unwrap_or(0.0) } else { right + 6.0 };
+                paint_cap(ui, at, centre, key, tone);
             }
             ring(ui, &response, rect, height / 2.0);
         }
@@ -761,29 +763,166 @@ pub(crate) fn files_changed_row(ui: &mut Ui, path: &str, adds: u32, dels: u32, m
     response
 }
 
-/// A file of the Changes list: viewed mark, mono name, `+a −d`. 30 px, radius 8, graphite when current.
-pub(crate) fn review_file_row(ui: &mut Ui, name: &str, current: bool, viewed: bool, adds: u32, dels: u32) -> Response {
+/// One file of the review's Files pane (frames 79, 23, 24).
+pub(crate) struct FileRow<'a> {
+    pub name: &'a str,
+    /// The folder under the name, in the List; `None` in the Tree, where the folder rows say it.
+    pub dir: Option<&'a str>,
+    pub current: bool,
+    pub viewed: bool,
+    /// Drafts and threads on the file.
+    pub comments: usize,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+/// What a press on a file row hit: the row, or its viewed box.
+pub(crate) struct FileRowOut {
+    pub row: Response,
+    pub check: Response,
+}
+
+/// A file row: the viewed box, the name in the code font with its folder under it in the List, then a comment count and the
+/// lines changed (left out once viewed). The current file is graphite. 38 px in the List, 26 in the Tree, radius 6.
+pub(crate) fn file_row(ui: &mut Ui, row: &FileRow) -> FileRowOut {
     let p = theme::pal(ui);
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height(ui, 30.0)), Sense::click());
-    if current {
-        ui.painter().rect_filled(rect, radius(8.0), p.inverse);
+    let height = if row.dir.is_some() { 38.0 } else { row_height(ui, 26.0) };
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+    if row.current {
+        ui.painter().rect_filled(rect, radius(6.0), p.inverse);
     } else if let Some(fill) = quiet_fill(ui, &response, true) {
-        ui.painter().rect_filled(rect, radius(8.0), fill);
+        ui.painter().rect_filled(rect, radius(6.0), fill);
     }
-    let (ink, quiet) = if current { (p.on_inverse, p.on_inverse.gamma_multiply(0.7)) } else { (p.graphite, faint(ui, &response)) };
+    // Tertiary falls under 4.5:1 on the hover and pressed fills, so the quiet text steps up to secondary there.
+    let quiet = if row.current { p.on_inverse.gamma_multiply(0.7) } else { faint(ui, &response) };
+    let ink = match (row.current, row.viewed) {
+        (true, _) => p.on_inverse,
+        (false, true) => faint(ui, &response),
+        (false, false) => p.graphite,
+    };
     let centre = rect.center().y;
-    let mark = pos2(rect.left() + 15.0, centre);
-    if viewed {
-        ui.painter().circle_filled(mark, 5.0, ink);
-    } else {
-        ui.painter().circle_stroke(mark, 4.5, Stroke::new(1.0, quiet));
+    let check_rect = Rect::from_center_size(pos2(rect.left() + 15.0, centre), vec2(14.0, 14.0));
+    let check = ui.interact(check_rect.expand(3.0), response.id.with("viewed-box"), Sense::click());
+    paint_check(ui, check_rect, row.viewed, row.current);
+    let mut right = rect.right() - 8.0;
+    if !row.viewed {
+        right = put_right(ui, galley(ui, &format!("+{} −{}", row.adds, row.dels), mono(ui, 11.0), quiet), right, centre) - 8.0;
     }
-    let stat = format!("+{adds} −{dels}");
-    let stat_left = put_right(ui, galley(ui, &stat, mono(ui, 11.0), quiet), rect.right() - 8.0, centre);
-    put(ui, fit(ui, name, mono(ui, 12.0), ink, stat_left - rect.left() - 36.0), rect.left() + 28.0, centre);
+    if row.comments > 0 {
+        let count = put_right(ui, galley(ui, &row.comments.to_string(), mono(ui, 11.0), quiet), right, centre);
+        let bubble = Rect::from_min_size(pos2(count - 11.0, centre - 3.5), vec2(8.0, 7.0));
+        ui.painter().rect_filled(bubble, radius(2.0), if row.current { p.on_inverse.gamma_multiply(0.6) } else { p.text_tertiary });
+        right = bubble.left() - 8.0;
+    }
+    let left = rect.left() + 30.0;
+    let room = right - left;
+    match row.dir {
+        Some(dir) => {
+            put(ui, fit(ui, row.name, mono(ui, 12.0), ink, room), left, rect.top() + 11.0);
+            put(ui, fit(ui, dir, mono(ui, 11.0), quiet, room), left, rect.top() + 28.0);
+        }
+        None => {
+            put(ui, fit(ui, row.name, mono(ui, 12.0), ink, room), left, centre);
+        }
+    }
+    ring(ui, &response, rect, 6.0);
+    ring(ui, &check, check_rect, 4.0);
+    let place = row.dir.map(|dir| format!(" in {dir}")).unwrap_or_default();
+    let comments = if row.comments > 0 { format!(", {} comments", row.comments) } else { String::new() };
+    let described = format!("{}{place}, {}{comments}, +{} −{}", row.name, if row.viewed { "viewed" } else { "not viewed" }, row.adds, row.dels);
+    response.widget_info(|| WidgetInfo::selected(Role::Button, true, row.current, described.clone()));
+    let check_name = format!("Viewed, {}", row.name);
+    check.widget_info(|| WidgetInfo::selected(Role::CheckBox, true, row.viewed, check_name.clone()));
+    FileRowOut { row: response, check }
+}
+
+/// A 14 px box of radius 4: graphite with a white tick when on; raised with a control edge when off, or on the graphite row
+/// a graphite box with a light edge.
+fn paint_check(ui: &Ui, rect: Rect, on: bool, on_inverse: bool) {
+    let p = theme::pal(ui);
+    if on {
+        ui.painter().rect_filled(rect, radius(4.0), if on_inverse { p.on_inverse } else { p.graphite });
+        let tick = if on_inverse { p.inverse } else { p.on_inverse };
+        let (a, b, c) = (rect.left_top() + vec2(3.5, 7.2), rect.left_top() + vec2(6.0, 9.8), rect.left_top() + vec2(10.6, 4.6));
+        ui.painter().line_segment([a, b], Stroke::new(1.8, tick));
+        ui.painter().line_segment([b, c], Stroke::new(1.8, tick));
+    } else if on_inverse {
+        ui.painter().rect(rect, radius(4.0), p.inverse, Stroke::new(1.0, p.on_inverse.gamma_multiply(0.5)), StrokeKind::Inside);
+    } else {
+        ui.painter().rect(rect, radius(4.0), p.raised, Stroke::new(1.0, p.control), StrokeKind::Inside);
+    }
+}
+
+/// The head of the Files pane: "Files", how many are viewed, and the Tree/List switch. Returns the switch's new value
+/// (true for List) when it was pressed.
+pub(crate) fn files_head(ui: &mut Ui, viewed: usize, total: usize, list: bool) -> Option<bool> {
+    let p = theme::pal(ui);
+    let mut picked = None;
+    padded(ui, Margin { left: 6, right: 4, top: 0, bottom: 8 }, |ui| {
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 24.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            label(ui, "Files", 13.5, p.graphite);
+            label(ui, format!("{viewed} of {total} viewed"), 11.5, p.text_tertiary);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let options = ["Tree".to_string(), "List".to_string()];
+                if let Some(at) = segmented(ui, "files-layout", "Files as", &options, usize::from(list)) {
+                    picked = Some(at == 1);
+                }
+            });
+        });
+    });
+    picked
+}
+
+/// The bar under the Files head: how much of the change is viewed, graphite on the strong hairline.
+pub(crate) fn viewed_progress(ui: &mut Ui, viewed: usize, total: usize) {
+    let p = theme::pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 3.0), Sense::hover());
+    ui.painter().rect_filled(rect, radius(1.5), p.border_strong);
+    let share = if total == 0 { 0.0 } else { viewed as f32 / total as f32 };
+    if share > 0.0 {
+        ui.painter().rect_filled(Rect::from_min_size(rect.min, vec2(rect.width() * share, 3.0)), radius(1.5), p.graphite);
+    }
+    response.widget_info(|| WidgetInfo::labeled(Role::ProgressIndicator, true, format!("{viewed} of {total} files viewed")));
+}
+
+/// The Files filter (frame 79): a 28 px field of radius 8 with its key cap at the right. The text is the glob filter.
+pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, width: f32, key: &str, focus: bool) -> Response {
+    let p = theme::pal(ui);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+    ui.painter().rect(rect, radius(8.0), p.raised, hairline(ui), StrokeKind::Inside);
+    let cap = cap_width(ui, key);
+    paint_cap(ui, rect.right() - 4.0 - cap, rect.center().y, key, CapTone::Quiet);
+    let inner = Rect::from_min_max(pos2(rect.left() + 10.0, rect.top()), pos2(rect.right() - 10.0 - cap, rect.bottom()));
+    // A child Ui over the box: the field sits inside the allocated rect and the row's cursor stays where the box ends.
+    let mut child = ui.new_child(UiBuilder::new().max_rect(inner).layout(Layout::left_to_right(Align::Center)));
+    let hint = RichText::new("Filter files").font(sans(ui, 12.0)).color(p.text_tertiary);
+    let field = child.add(egui::TextEdit::singleline(text).frame(egui::Frame::NONE).hint_text(hint).font(sans(ui, 12.0)).desired_width(inner.width()));
+    if focus {
+        field.request_focus();
+    }
+    if field.has_focus() {
+        ring_in(ui, &field, rect, 8.0);
+    }
+    let name = format!("Filter files  {key}");
+    ui.ctx().accesskit_node_builder(field.id, |node| node.set_label(name));
+    field
+}
+
+/// A 28 px select of radius 8 (frame 79's "Path"): the chosen value and an up-down chevron. Pressing it opens its choices.
+pub(crate) fn select_button(ui: &mut Ui, value: &str, name: &str, width: f32) -> Response {
+    let p = theme::pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    let fill = if response.is_pointer_button_down_on() { p.pressed } else if response.hovered() { p.sunken } else { p.raised };
+    ui.painter().rect(rect, radius(8.0), fill, hairline(ui), StrokeKind::Inside);
+    put(ui, galley(ui, value, sans(ui, 12.5), p.graphite), rect.left() + 11.0, rect.center().y);
+    let at = pos2(rect.right() - 14.0, rect.center().y);
+    for dy in [-1.75, 1.75] {
+        ui.painter().line_segment([at + vec2(-3.0, dy), at + vec2(3.0, dy)], Stroke::new(1.5, p.text_tertiary));
+    }
     ring(ui, &response, rect, 8.0);
-    let described = format!("{name}, {}, +{adds} −{dels}", if viewed { "viewed" } else { "not viewed" });
-    response.widget_info(|| WidgetInfo::selected(Role::Button, true, current, described.clone()));
+    let label = format!("{value}, {name}");
+    response.widget_info(|| WidgetInfo::labeled(Role::ComboBox, true, label.clone()));
     response
 }
 
@@ -1636,21 +1775,21 @@ pub(crate) fn verdict_card(ui: &mut Ui, selected: bool, title: &str, note: &str)
 
 /// The height [`keys_panel`] takes for `rows` rows.
 pub(crate) fn keys_panel_height(rows: usize) -> f32 {
-    40.0 + 22.0 * rows as f32
+    34.0 + 24.0 * rows as f32
 }
 
-/// The keys of the screen: caps and what they do, under a seam.
+/// The keys of the screen (frame 79): a seam, "Keys", then a 24 px row per action with its caps, the words 60 px in.
 pub(crate) fn keys_panel(ui: &mut Ui, rows: &[(Vec<String>, String)]) {
     let p = theme::pal(ui);
     let rect = ui.available_rect_before_wrap();
     ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(theme::sz(ui).hairline, p.border));
-    ui.add_space(10.0);
+    ui.add_space(15.0);
     label(ui, "Keys", 12.0, p.text_secondary);
-    ui.add_space(4.0);
+    ui.add_space(3.0);
     let caps_width = |caps: &[String]| caps.iter().map(|cap| cap_width(ui, cap) + 4.0).sum::<f32>();
-    let column = rows.iter().map(|(caps, _)| caps_width(caps)).fold(44.0_f32, f32::max) + 4.0;
+    let column = rows.iter().map(|(caps, _)| caps_width(caps)).fold(56.0_f32, f32::max) + 4.0;
     for (caps, text) in rows {
-        let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+        let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
         let mut x = row.left();
         for cap in caps {
             x = paint_cap(ui, x, row.center().y, cap, CapTone::Quiet) + 4.0;
@@ -1662,12 +1801,12 @@ pub(crate) fn keys_panel(ui: &mut Ui, rows: &[(Vec<String>, String)]) {
 
 // ---- title bar and status bar ----
 
-/// A quiet action of the title bar: a word and its key cap on a 24 px target, radius 6.
+/// A quiet action of the title bar: a word and its key cap on a 24 px target of radius 6, 8 px in and 6 px after the cap.
 pub(crate) fn title_action(ui: &mut Ui, text: &str, key: &str) -> Response {
     let p = theme::pal(ui);
     let text_galley = galley(ui, text, sans(ui, 12.5), p.text_secondary);
     let cap = if key.is_empty() { None } else { Some(cap_width(ui, key)) };
-    let width = 16.0 + text_galley.size().x + cap.map_or(0.0, |c| 6.0 + c);
+    let width = 8.0 + text_galley.size().x + cap.map_or(8.0, |c| 6.0 + c + 6.0);
     let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
     if let Some(fill) = quiet_fill(ui, &response, true) {
         ui.painter().rect_filled(rect, radius(6.0), fill);
@@ -1682,14 +1821,34 @@ pub(crate) fn title_action(ui: &mut Ui, text: &str, key: &str) -> Response {
     response
 }
 
+/// [`title_action`] for an action that is not available yet: drawn in the quiet tone, disabled to assistive technology with
+/// `why` in its name and tooltip. A press still answers, so the reader learns why (rule 15).
+pub(crate) fn title_action_unavailable(ui: &mut Ui, text: &str, key: &str, why: &str) -> Response {
+    let p = theme::pal(ui);
+    let text_galley = galley(ui, text, sans(ui, 12.5), p.text_tertiary);
+    let width = 8.0 + text_galley.size().x + 6.0 + cap_width(ui, key) + 6.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+    if let Some(fill) = quiet_fill(ui, &response, true) {
+        ui.painter().rect_filled(rect, radius(6.0), fill);
+    }
+    let right = put(ui, text_galley, rect.left() + 8.0, rect.center().y);
+    paint_cap(ui, right + 6.0, rect.center().y, key, CapTone::Quiet);
+    ring(ui, &response, rect, 6.0);
+    let name = format!("{text}  {key}, not available: {why}");
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, false, name.clone()));
+    response.on_hover_text(why)
+}
+
 /// A strip of the window chrome. Its parts are drawn in turn: the app puts its fixed items on the right, then a screen puts
 /// its own between them and the left edge.
 pub(crate) struct Bar {
     rect: Rect,
     right: f32,
+    /// Room kept free at the left end for the traffic lights.
+    lead: f32,
 }
 
-fn strip(ui: &mut Ui, height: f32, seam_above: bool) -> Bar {
+fn strip(ui: &mut Ui, height: f32, seam_above: bool, lead: f32) -> Bar {
     let rect = ui.allocate_space(vec2(ui.available_width(), height)).1;
     let p = theme::pal(ui);
     ui.painter().rect_filled(rect, 0.0, p.hover);
@@ -1698,21 +1857,43 @@ fn strip(ui: &mut Ui, height: f32, seam_above: bool) -> Bar {
     } else {
         seam_bottom(ui, rect);
     }
-    Bar { rect, right: rect.right() - 14.0 }
+    Bar { rect, right: rect.right() - 14.0, lead }
 }
 
+/// The title bar. On macOS the traffic lights sit over its left end ([`theme::LIGHTS_ROOM`]), and its empty space moves the
+/// window: drag it to move, double-click to zoom, as a native title bar does.
 pub(crate) fn title_bar(ui: &mut Ui) -> Bar {
-    strip(ui, theme::TITLE_BAR_HEIGHT, false)
+    let bar = strip(ui, theme::TITLE_BAR_HEIGHT, false, theme::LIGHTS_ROOM);
+    // Click and drag, not focus: the bare bar is no Tab stop.
+    let ground = ui.interact(bar.rect, ui.scope_id().with("title-bar-ground"), Sense::CLICK | Sense::DRAG);
+    if ground.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if ground.double_clicked() {
+        let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+    }
+    bar
 }
 
 pub(crate) fn status_bar(ui: &mut Ui) -> Bar {
-    strip(ui, theme::STATUS_BAR_HEIGHT, true)
+    strip(ui, theme::STATUS_BAR_HEIGHT, true, 0.0)
 }
 
 impl Bar {
+    /// Where the left items start: 14 px in, after the traffic lights on the title bar.
+    fn start(&self) -> f32 {
+        self.rect.left() + 14.0 + self.lead
+    }
+
+    /// Moves the start of [`Bar::left`] right by `dx`, past an item the app drew there first (the left-pane toggle).
+    pub(crate) fn advance(&mut self, dx: f32) {
+        self.lead += dx;
+    }
+
     /// Width left for [`Bar::left`] between the strip's edge and the items already placed on the right.
     pub(crate) fn room(&self) -> f32 {
-        (self.right - self.rect.left() - 14.0).max(0.0)
+        (self.right - self.start()).max(0.0)
     }
 
     pub(crate) fn width(&self) -> f32 {
@@ -1721,7 +1902,7 @@ impl Bar {
 
     /// Items from the left edge, in a row centred on the strip.
     pub(crate) fn left<R>(&self, ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-        let rect = Rect::from_min_max(pos2(self.rect.left() + 14.0, self.rect.top()), pos2(self.right, self.rect.bottom()));
+        let rect = Rect::from_min_max(pos2(self.start(), self.rect.top()), pos2(self.right, self.rect.bottom()));
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)));
         child.spacing_mut().item_spacing.x = 8.0;
         child.set_clip_rect(rect);
@@ -1790,32 +1971,160 @@ pub(crate) fn breadcrumb_with(ui: &mut Ui, brand: bool, trail: &[&str]) {
     });
 }
 
+/// The review's breadcrumb (frame 79): the mark, `PR Craft`, the repository, the change number and the current file. With
+/// `menu`, the number is a button that opens the change's menu; it returns the number's response either way.
+pub(crate) fn breadcrumb_menu(ui: &mut Ui, brand: bool, repo: Option<&str>, number: &str, file: Option<&str>, menu: bool) -> Response {
+    let p = theme::pal(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        logomark(ui);
+        let slash = |ui: &mut Ui| label(ui, "/", 13.0, p.text_tertiary);
+        if brand {
+            label(ui, "PR Craft", 13.0, p.graphite);
+            slash(ui);
+        }
+        if let Some(repo) = repo {
+            label(ui, repo, 13.0, p.text_secondary);
+            slash(ui);
+        }
+        let text = galley(ui, number, sans(ui, 13.0), p.text_secondary);
+        let (rect, crumb) = ui.allocate_exact_size(text.size(), if menu { Sense::click() } else { Sense::hover() });
+        // The hover fill reaches past the words, so the number sits where plain text would.
+        if let Some(fill) = quiet_fill(ui, &crumb, menu) {
+            ui.painter().rect_filled(rect.expand2(vec2(5.0, 3.0)), radius(5.0), fill);
+        }
+        put(ui, text, rect.left(), rect.center().y);
+        ring(ui, &crumb, rect.expand2(vec2(5.0, 3.0)), 5.0);
+        if menu {
+            let name = format!("{number}: the change's menu, with its forge page, a local checkout and its link");
+            crumb.widget_info(|| WidgetInfo::labeled(Role::Button, true, name.clone()));
+        } else {
+            crumb.widget_info(|| WidgetInfo::labeled(Role::Label, true, number));
+        }
+        if let Some(file) = file {
+            slash(ui);
+            label(ui, file, 13.0, p.text_secondary);
+        }
+        crumb
+    })
+    .inner
+}
+
 /// The width `text` takes at `px`, for choosing what fits.
 pub(crate) fn text_width(ui: &Ui, text: &str, px: f32) -> f32 {
     galley(ui, text, sans(ui, px), Color32::PLACEHOLDER).size().x
 }
 
-/// A title-bar pill with a dot: `● 3 new`.
+/// A title-bar pill with a dot: `● 3 new`. Pressing it opens what it counts.
 pub(crate) fn status_pill(ui: &mut Ui, dot_colour: Color32, text: &str) -> Response {
     let p = theme::pal(ui);
     let text_galley = galley(ui, text, sans(ui, 12.0), p.graphite);
-    let (rect, response) = ui.allocate_exact_size(vec2(text_galley.size().x + 38.0, 24.0), Sense::hover());
-    ui.painter().rect(rect, radius(12.0), p.raised, hairline(ui), StrokeKind::Inside);
+    let (rect, response) = ui.allocate_exact_size(vec2(text_galley.size().x + 33.0, 24.0), Sense::click());
+    let fill = if response.is_pointer_button_down_on() { p.pressed } else if response.hovered() { p.sunken } else { p.raised };
+    ui.painter().rect(rect, radius(12.0), fill, hairline(ui), StrokeKind::Inside);
     ui.painter().circle_filled(pos2(rect.left() + 14.0, rect.center().y), 3.0, dot_colour);
-    put(ui, text_galley, rect.left() + 25.0, rect.center().y);
+    put(ui, text_galley, rect.left() + 23.0, rect.center().y);
+    ring(ui, &response, rect, 12.0);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, text));
+    response
+}
+
+/// What a status-bar connection is to: a forge host or the AI engine.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ConnMark {
+    Forge(Forge),
+    Engine,
+}
+
+/// A status-bar item (frame 79): a state dot, the mark of what it connects to, and `gh · github.com` in the code font.
+pub(crate) fn connection(ui: &mut Ui, dot_colour: Color32, mark: ConnMark, text: &str) -> Response {
+    let p = theme::pal(ui);
+    let text_galley = galley(ui, text, mono(ui, 11.0), p.text_secondary);
+    let (rect, response) = ui.allocate_exact_size(vec2(text_galley.size().x + 32.0, 14.0), Sense::hover());
+    let y = rect.center().y;
+    ui.painter().circle_filled(pos2(rect.left() + 4.0, y), 4.0, dot_colour);
+    let at = pos2(rect.left() + 20.0, y);
+    match mark {
+        // Our own marks, not the forges' logos: a filled disc for GitHub, a ring for GitLab, as the inbox's repositories.
+        ConnMark::Forge(Forge::GitHub) => {
+            ui.painter().circle_filled(at, 5.0, p.graphite);
+        }
+        ConnMark::Forge(Forge::GitLab) => {
+            ui.painter().circle_stroke(at, 4.5, Stroke::new(1.5, p.graphite));
+        }
+        ConnMark::Engine => {
+            for turn in 0..3 {
+                let angle = std::f32::consts::PI * turn as f32 / 3.0;
+                let arm = vec2(angle.cos(), angle.sin()) * 5.0;
+                ui.painter().line_segment([at - arm, at + arm], Stroke::new(1.6, p.ember));
+            }
+        }
+    }
+    put(ui, text_galley, rect.left() + 32.0, y);
     response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
     response
 }
 
-/// A status-bar item: a dot and a few words in the code font.
-pub(crate) fn connection(ui: &mut Ui, dot_colour: Color32, text: &str) -> Response {
+/// A hint of the status bar: words and the key that does it, `Command palette ⌘K`. Pressing it does the same.
+pub(crate) fn status_hint(ui: &mut Ui, text: &str, key: &str) -> Response {
     let p = theme::pal(ui);
-    let text_galley = galley(ui, text, mono(ui, 11.0), p.text_secondary);
-    let (rect, response) = ui.allocate_exact_size(vec2(text_galley.size().x + 16.0, 14.0), Sense::hover());
-    ui.painter().circle_filled(pos2(rect.left() + 4.0, rect.center().y), 4.0, dot_colour);
-    put(ui, text_galley, rect.left() + 16.0, rect.center().y);
-    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+    let text_galley = galley(ui, text, sans(ui, 11.0), p.text_secondary);
+    let width = text_galley.size().x + 6.0 + cap_width(ui, key);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 18.0), Sense::click());
+    let right = put(ui, text_galley, rect.left(), rect.center().y);
+    paint_cap(ui, right + 6.0, rect.center().y, key, CapTone::Quiet);
+    ring(ui, &response, rect, 4.0);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, format!("{text}  {key}")));
     response
+}
+
+/// The button at either end of the title bar that hides or shows a side pane: a window glyph with that side filled while it shows.
+pub(crate) fn pane_toggle(ui: &mut Ui, right_side: bool, shown: bool, name: &str, key: &str) -> Response {
+    let p = theme::pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(28.0, 24.0), Sense::click());
+    if let Some(fill) = quiet_fill(ui, &response, true) {
+        ui.painter().rect_filled(rect, radius(6.0), fill);
+    }
+    let glyph = Rect::from_center_size(rect.center(), vec2(16.0, 13.0));
+    ui.painter().rect_stroke(glyph, radius(3.0), Stroke::new(1.4, p.graphite), StrokeKind::Inside);
+    let pane = if right_side {
+        Rect::from_min_max(pos2(glyph.right() - 5.7, glyph.top()), glyph.right_bottom())
+    } else {
+        Rect::from_min_max(glyph.left_top(), pos2(glyph.left() + 5.7, glyph.bottom()))
+    };
+    if shown {
+        let round = if right_side { CornerRadius { ne: 3, se: 3, ..CornerRadius::ZERO } } else { CornerRadius { nw: 3, sw: 3, ..CornerRadius::ZERO } };
+        ui.painter().rect_filled(pane, round, p.graphite);
+    } else {
+        let x = if right_side { pane.left() } else { pane.right() };
+        ui.painter().vline(x, glyph.y_range(), Stroke::new(1.4, p.graphite));
+    }
+    ring(ui, &response, rect, 6.0);
+    let label = format!("{name}  {key}");
+    response.widget_info(|| WidgetInfo::selected(Role::Button, true, shown, label.clone()));
+    response.on_hover_text(format!("{name} ({key})"))
+}
+
+/// The signed-in reader's initials on a 24 px disc; pressing it opens the account menu (Settings, Activity).
+pub(crate) fn account_button(ui: &mut Ui, initials: &str, name: &str) -> Response {
+    let p = theme::pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    // The fill stays: haze_text on the hover haze is under 4.5:1 in dark. Hover shows as an edge.
+    ui.painter().circle_filled(rect.center(), 12.0, p.haze_subtle);
+    if response.hovered() {
+        ui.painter().circle_stroke(rect.center(), 11.5, Stroke::new(1.0, p.haze_text));
+    }
+    let text = galley(ui, initials, sans(ui, 11.0), p.haze_text);
+    put(ui, Arc::clone(&text), rect.center().x - text.size().x / 2.0, rect.center().y);
+    ring(ui, &response, rect, 12.0);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
+    response
+}
+
+/// A 1 × 16 px divider between groups of the title bar.
+pub(crate) fn bar_divider(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(1.0, 16.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, theme::pal(ui).border);
 }
 
 // ---- settings and forms ----
@@ -2401,7 +2710,10 @@ mod tests {
                 let row = EventRow { forge: Forge::GitHub, text: "nina.k pushed", meta: "acme/api #479", age: "5h", unseen: false, selected: false };
                 event_row(ui, "d", &row)
             }),
-            ("file row", |ui| review_file_row(ui, "retry.go", false, false, 8, 3)),
+            ("file row", |ui| {
+                let row = FileRow { name: "retry.go", dir: Some("internal/webhooks"), current: false, viewed: false, comments: 1, adds: 8, dels: 3 };
+                file_row(ui, &row).row
+            }),
             ("folder row", |ui| folder_row(ui, "internal/webhooks", false, 1, 3)),
             ("draft row", |ui| draft_row(ui, "backoff cap is hard-coded", "retry.go:35")),
             ("hunk header", |ui| hunk_header(ui, 400.0, "@@ -30,7 +30,12 @@ func Deliver")),

@@ -71,6 +71,8 @@ pub fn login(forge: Forge) -> Login {
 pub struct ForgeHost {
     pub name: String,
     pub signed_in: bool,
+    /// The account the CLI acts as there: gh's "account ada", glab's "as ada". The first one when gh lists several.
+    pub account: Option<String>,
 }
 
 /// Every host the forge's CLI knows and whether it can act there. Both CLIs exit non-zero when any one host fails,
@@ -88,9 +90,13 @@ fn parse_auth_status(text: &str) -> Vec<ForgeHost> {
     for line in text.lines() {
         let word = line.trim();
         if !line.starts_with(char::is_whitespace) && !word.is_empty() && !word.contains(' ') && word.contains('.') {
-            hosts.push(ForgeHost { name: word.to_ascii_lowercase(), signed_in: false });
+            hosts.push(ForgeHost { name: word.to_ascii_lowercase(), signed_in: false, account: None });
         } else if let Some(host) = hosts.last_mut().filter(|_| word.contains("Logged in to")) {
             host.signed_in = true;
+            if host.account.is_none() {
+                let mut words = word.split_whitespace().skip_while(|w| *w != "account" && *w != "as").skip(1);
+                host.account = words.next().map(|login| login.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.').to_string());
+            }
         }
     }
     hosts
@@ -361,7 +367,10 @@ mod tests {
         let hosts = parse_auth_status(text);
         assert_eq!(
             hosts,
-            [ForgeHost { name: "gitlab.com".into(), signed_in: false }, ForgeHost { name: "gitlab.example.go.th".into(), signed_in: true }]
+            [
+                ForgeHost { name: "gitlab.com".into(), signed_in: false, account: None },
+                ForgeHost { name: "gitlab.example.go.th".into(), signed_in: true, account: Some("someone".into()) }
+            ]
         );
     }
 
@@ -373,7 +382,10 @@ mod tests {
                     X Failed to log in to ghe.acme.dev using token (GH_ENTERPRISE_TOKEN)\n";
         assert_eq!(
             parse_auth_status(text),
-            [ForgeHost { name: "github.com".into(), signed_in: true }, ForgeHost { name: "ghe.acme.dev".into(), signed_in: false }]
+            [
+                ForgeHost { name: "github.com".into(), signed_in: true, account: Some("ada".into()) },
+                ForgeHost { name: "ghe.acme.dev".into(), signed_in: false, account: None }
+            ]
         );
     }
 

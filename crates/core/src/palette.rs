@@ -11,7 +11,7 @@ use crate::keys::{self, Action, Binding, Scope};
 use crate::{Change, Forge};
 
 /// How many actions one search lists.
-const ACTION_LIMIT: usize = 16;
+const ACTION_LIMIT: usize = 19;
 /// How many changes a typed query lists, and how many an empty one does (the newest).
 const CHANGE_LIMIT: usize = 8;
 const RECENT_LIMIT: usize = 5;

@@ -140,7 +140,9 @@ fn from_press(key: Key, modifiers: Modifiers) -> Result<Binding, String> {
         (modifiers.shift, Modifier::Shift),
     ]
     .into_iter()
+    // `?` is typed with ⇧, so the ⇧ is part of the key, not a modifier of the shortcut.
     .filter_map(|(on, m)| on.then_some(m))
+    .filter(|m| !(key == Key::Questionmark && *m == Modifier::Shift))
     .collect();
     Binding::new(name, &held).ok_or_else(|| format!("{name} cannot be a shortcut. Press a letter, digit, F key, arrow or punctuation key."))
 }
@@ -158,8 +160,9 @@ pub fn hint(c: &impl HasContext, text: &str, id: &str) -> String {
 /// Whether the modifiers held at a key event are exactly the binding's: ⇧, ⌥, ⌃ and ⌘ each on or off as the binding says, so a
 /// shortcut on ⌘↵ never fires on ⇧⌘↵, and one on ⌘J never fires on ⌃⌘J. egui's own matching lets extra ⇧ and ⌥ through.
 /// ⌘ is `command` or `mac_cmd` (a Mac reports both); ⌃ is `ctrl` itself, as this app runs on macOS only.
-fn exact(held: Modifiers, wanted: Modifiers) -> bool {
-    held.shift == wanted.shift && held.alt == wanted.alt && held.ctrl == wanted.ctrl && (held.command || held.mac_cmd) == wanted.command
+fn exact(key: Key, held: Modifiers, wanted: Modifiers) -> bool {
+    let shift = held.shift == wanted.shift || key == Key::Questionmark;
+    shift && held.alt == wanted.alt && held.ctrl == wanted.ctrl && (held.command || held.mac_cmd) == wanted.command
 }
 
 /// Whether the key of `id` went down this frame with exactly its modifiers. Does not take the key from anyone else.
@@ -176,7 +179,7 @@ pub fn consume(c: &impl HasContext, id: &str) -> bool {
     let Some((key, wanted)) = pattern(c, id) else { return false };
     c.context().input_mut(|i| {
         let before = i.events.len();
-        i.events.retain(|e| !matches!(e, Event::Key { key: k, pressed: true, modifiers: m, .. } if *k == key && exact(*m, wanted)));
+        i.events.retain(|e| !matches!(e, Event::Key { key: k, pressed: true, modifiers: m, .. } if *k == key && exact(key, *m, wanted)));
         i.events.len() != before
     })
 }
@@ -192,7 +195,7 @@ fn event(c: &impl HasContext, id: &str, wanted: impl Fn(bool) -> bool) -> bool {
     pattern(c, id).is_some_and(|(key, mods)| {
         c.context().input(|i| {
             i.events.iter().any(
-                |e| matches!(e, Event::Key { key: k, pressed: true, repeat, modifiers: m, .. } if *k == key && wanted(*repeat) && exact(*m, mods)),
+                |e| matches!(e, Event::Key { key: k, pressed: true, repeat, modifiers: m, .. } if *k == key && wanted(*repeat) && exact(key, *m, mods)),
             )
         })
     })

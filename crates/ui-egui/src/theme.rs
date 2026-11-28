@@ -479,6 +479,9 @@ pub const SPACE_3: f32 = 12.0;
 /// The window chrome (Figma frames 01 and 02): the title bar and the status bar.
 pub const TITLE_BAR_HEIGHT: f32 = 39.0;
 pub const STATUS_BAR_HEIGHT: f32 = 27.0;
+/// On macOS the traffic lights sit over the title bar's left end (the window's frame is `Inset`): 52 px of lights from 14 px
+/// in, then 6 px before the first item, which starts at 72 px as in the frames. Elsewhere the OS draws its own title bar.
+pub const LIGHTS_ROOM: f32 = if cfg!(target_os = "macos") { 58.0 } else { 0.0 };
 
 /// Pane widths of the inbox (Figma frame 01).
 pub const SIDEBAR_WIDTH: f32 = 248.0;

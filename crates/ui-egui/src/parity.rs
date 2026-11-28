@@ -611,9 +611,15 @@ fn svg_app() -> PrCraftApp {
         base_sha: None,
         diff_refs: None,
     };
+    let commit = Commit { sha: "5d1e0aa1".into(), title: "Use the two-arrow retry icon".into(), author: "dev.sato".into(), at: None, parent: None, merge: false };
+    let list = CommitList { change: change.clone(), commits: vec![commit], complete: true, reviewed: None, reviewed_error: None };
     let view = ReviewView { change, meta, anchor, stale: false, files, local, filter: Vec::new(), layout: Default::default() };
-    let screen = ReviewScreen::fixture(view, Vec::new(), false).with_svg("src/icons/retry.svg", RETRY_SVG_OLD, RETRY_SVG_NEW);
-    review_over(screen, Runs::default())
+    let screen =
+        ReviewScreen::fixture(view, Vec::new(), false).with_svg("src/icons/retry.svg", RETRY_SVG_OLD, RETRY_SVG_NEW).with_commit_list(list);
+    let mut app = review_over(screen, Runs::default());
+    // The change waits on the reader, so the header says Your turn.
+    app.changes.push(self::change(Forge::GitHub, "acme/web", 2231, "Use the two-arrow retry icon", "dev.sato", 1));
+    app
 }
 
 
@@ -635,7 +641,7 @@ fn spaced_folder_app() -> PrCraftApp {
     for file in view.files.iter_mut().filter(|f| f.path.starts_with("docs/")) {
         file.path = file.path.replacen("docs/", "docs/My Notes/", 1);
     }
-    review_over(ReviewScreen::fixture(view, Vec::new(), false), Runs::default())
+    review_over(ReviewScreen::fixture(view, Vec::new(), false).with_tree(), Runs::default())
 }
 
 /// Figma frame 105: six files in unified view, two of them viewed, ready for a right-click on a folder.
@@ -648,7 +654,7 @@ fn tree_app() -> PrCraftApp {
         .map(|f| (f.path.clone(), f.hash))
         .collect();
     view.local.viewed.extend(viewed);
-    review_over(ReviewScreen::fixture(view, Vec::new(), false), Runs::default())
+    review_over(ReviewScreen::fixture(view, Vec::new(), false).with_tree(), Runs::default())
 }
 
 /// Figma frame 107, in the place the app has for it: a change with no draft on this Mac.
@@ -928,7 +934,7 @@ fn tab_moves_from_cancel_to_check_out_here_in_the_confirm_step() {
 fn open_locally_names_its_choices_and_a_refused_one_says_why() {
     let ready = harness(local_app(LocalCase::Ready), 1440.0, 900.0);
     for name in
-        ["Open  ", "Check out in a worktree", "Check out here", "Open invoicer.go:", "Open in Xcode", "Open in Zed", "Open Terminal at the checkout"]
+        ["#1293: the change's menu", "Check out in a worktree", "Check out here", "Open invoicer.go:", "Open in Xcode", "Open in Zed", "Open Terminal at the checkout"]
     {
         assert!(named(&ready, Role::Button, name), "no button is named {name:?}");
     }
@@ -966,7 +972,7 @@ fn the_review_names_its_files_verdicts_and_actions_to_assistive_technology() {
     let harness = harness(review_app(), 1440.0, 900.0);
     let (screen_files, _) = (parse_unified(INVOICER_DIFF), ());
     let file = screen_files[0].path.rsplit('/').next().unwrap_or_default().to_string();
-    for name in ["‹ Inbox", file.as_str(), "Submit review", "Keep as draft", "Edit first", "Discard", "AI review", "Share image"] {
+    for name in ["‹ Inbox", file.as_str(), "Submit review", "Keep as draft", "Edit first", "Discard", "AI review", "Share  ", "Visualize  "] {
         assert!(named(&harness, Role::Button, name), "no button is named {name:?}");
     }
     for verdict in Verdict::offered(Forge::GitHub) {
@@ -1363,6 +1369,23 @@ fn the_local_drafts_queue_lists_what_is_saved_and_says_none_only_when_every_file
     let unread = harness(unread, 1440.0, 900.0);
     assert!(!says(&unread, "No drafts on this Mac"), "a file that could not be read may hold drafts");
     assert!(says(&unread, "could not be read"));
+}
+
+#[test]
+fn a_key_whose_answer_lives_in_a_hidden_pane_shows_it() {
+    let mut harness = harness(svg_app(), 1440.0, 900.0);
+    harness.run_steps(3);
+    harness.state_mut().panes = crate::Panes { left: false, right: false };
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    harness.run_steps(3);
+    assert!(harness.state().panes.left, "⌘F shows the Files pane its filter is in");
+    assert!(harness.ctx.text_edit_focused(), "⌘F leaves focus in the filter");
+    harness.key_press(egui::Key::Escape);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::V);
+    harness.run_steps(3);
+    assert!(!harness.state().panes.right);
+    assert!(says(&harness, "Visualize is not available yet"), "with Your review hidden, its notice shows over the diff");
 }
 
 #[test]

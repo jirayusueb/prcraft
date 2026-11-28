@@ -167,22 +167,17 @@ pub(crate) fn status_line(ui: &mut Ui, runs: &mut Runs) {
 
 // ---- the title area ----
 
-/// What the title-area button asks for.
+/// What the title-area pill asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PillAct {
     None,
     Popover,
-    Activity,
 }
 
-/// The pill while a run goes (frames 49, 70): where its review stands; else a plain Activity button.
+/// The pill while a run goes (frames 49, 70): where its review stands. Nothing while no run goes: Activity is in the account
+/// menu and on its key.
 pub(crate) fn pill_ui(ui: &mut Ui, runs: &Runs) -> PillAct {
-    let Some(pill) = ai::pill(runs.all()) else {
-        return if crate::components::title_action(ui, "Activity", &keymap::label(ui, "app.activity")).clicked() {
-            PillAct::Activity
-        } else {
-            PillAct::None
-        };
-    };
+    let Some(pill) = ai::pill(runs.all()) else { return PillAct::None };
     let text = if pill.stuck { format!("Looks stuck · {}", pill.text) } else { pill.text.clone() };
     let kind = if pill.stuck { crate::components::PillKind::Warn } else { crate::components::PillKind::Secondary };
     let button = crate::components::Pill::new(kind, &text).small().show(ui);
