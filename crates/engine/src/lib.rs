@@ -16,6 +16,7 @@ pub mod stack;
 mod store;
 pub mod thread;
 pub mod turn;
+pub mod update;
 pub mod view;
 
 use pr_craft_core::review::Verdict;
@@ -92,7 +93,12 @@ const fn join<const N: usize>(parts: &[&[&'static str]]) -> [&'static str; N] {
 }
 
 /// Every command id [`run`] takes.
-pub const COMMANDS: &[&str] = &join::<{ BASE.len() + ai::COMMANDS.len() + mine::COMMANDS.len() }>(&[BASE, &ai::COMMANDS, &mine::COMMANDS]);
+pub const COMMANDS: &[&str] = &join::<{ BASE.len() + ai::COMMANDS.len() + mine::COMMANDS.len() + update::COMMANDS.len() }>(&[
+    BASE,
+    &ai::COMMANDS,
+    &mine::COMMANDS,
+    &update::COMMANDS,
+]);
 
 /// Which way a failed read or write of the files on this Mac was going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +123,9 @@ pub enum CommandError {
     /// Reading or writing the review files on this Mac failed.
     #[error("{message}")]
     Store { kind: StoreKind, message: String },
+    /// Asking GitHub for a release, or downloading it, failed.
+    #[error("{0}")]
+    Update(String),
 }
 
 impl CommandError {
@@ -148,6 +157,7 @@ impl CommandError {
             },
             CommandError::Store { kind: StoreKind::Read, .. } => "E-STORE-READ",
             CommandError::Store { kind: StoreKind::Write, .. } => "E-STORE-WRITE",
+            CommandError::Update(_) => "E-UPDATE",
         }
     }
 }
@@ -457,6 +467,7 @@ fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
             Ok(serde_json::to_value(local::open_editor(&p.change, p.editor, p.path.as_deref(), p.line)?)?)
         }
         id if ai::COMMANDS.contains(&id) => ai::command(&ai::Env::from_process()?, id, value),
+        id if update::COMMANDS.contains(&id) => update::command(id, value).unwrap_or_else(|| Err(CommandError::Unknown(id.to_string()))),
         id if mine::COMMANDS.contains(&id) => mine::command(id, value).unwrap_or_else(|| Err(CommandError::Unknown(id.to_string()))),
         other => Err(CommandError::Unknown(other.to_string())),
     }
