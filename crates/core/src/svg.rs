@@ -24,7 +24,10 @@ const VALUE_CHARS: usize = 60;
 pub enum SvgChange {
     /// Shown for context: the root's viewBox when it did not change.
     Same(String),
-    Changed { old: String, new: String },
+    Changed {
+        old: String,
+        new: String,
+    },
     Added(String),
     Removed(String),
 }
@@ -161,7 +164,10 @@ impl Lines {
             let (first, last) = span?;
             map.range(first..=last).rev().find(|(_, (_, c))| *c || !changed).map(|(_, (at, _))| *at)
         };
-        last(&self.new, new, true).or_else(|| last(&self.old, old, true)).or_else(|| last(&self.new, new, false)).or_else(|| last(&self.old, old, false))
+        last(&self.new, new, true)
+            .or_else(|| last(&self.old, old, true))
+            .or_else(|| last(&self.new, new, false))
+            .or_else(|| last(&self.old, old, false))
     }
 }
 
@@ -199,7 +205,12 @@ pub fn structure(old: Option<&str>, new: Option<&str>, file: &FileDiff) -> Resul
         && let (Some(was), Some(is)) = (a.attr("viewBox"), b.attr("viewBox"))
         && was == is
     {
-        rows.push(SvgRow { element: b.name(), attr: Some("viewBox".into()), change: SvgChange::Same(cut(is)), anchor: lines.anchor(Some(b.lines), None) });
+        rows.push(SvgRow {
+            element: b.name(),
+            attr: Some("viewBox".into()),
+            change: SvgChange::Same(cut(is)),
+            anchor: lines.anchor(Some(b.lines), None),
+        });
     }
     for (n, element) in after.iter().enumerate() {
         if let Some(o) = matched[n] {
@@ -239,10 +250,8 @@ impl Rows {
 fn changed_rows(old: &Element, new: &Element, lines: &Lines, rows: &mut Rows) {
     let anchor = lines.anchor(Some(new.lines), Some(old.lines));
     let row = |attr: &str, change, anchor| SvgRow { element: new.name(), attr: Some(attr.to_string()), change, anchor };
-    let (was, is): (HashMap<&str, &str>, HashMap<&str, &str>) = (
-        old.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
-        new.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
-    );
+    let (was, is): (HashMap<&str, &str>, HashMap<&str, &str>) =
+        (old.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(), new.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect());
     for (name, value) in &new.attrs {
         match was.get(name.as_str()) {
             Some(before) if *before == value.as_str() => {}
@@ -494,7 +503,8 @@ mod tests {
     fn changed_text_posts_on_its_changed_line_even_when_the_start_tag_is_outside_the_hunk() {
         let old = "<svg>\n<style>\na{}\nb{}\nc{}\nd{}\ne{fill:red}\n</style>\n</svg>\n";
         let new = old.replace("red", "blue");
-        let patch = "diff --git a/i.svg b/i.svg\n--- a/i.svg\n+++ b/i.svg\n@@ -4,5 +4,5 @@\n b{}\n c{}\n d{}\n-e{fill:red}\n+e{fill:blue}\n </style>\n";
+        let patch =
+            "diff --git a/i.svg b/i.svg\n--- a/i.svg\n+++ b/i.svg\n@@ -4,5 +4,5 @@\n b{}\n c{}\n d{}\n-e{fill:red}\n+e{fill:blue}\n </style>\n";
         let file = parse_unified(patch).into_iter().next().expect("one file");
         let rows = structure(Some(old), Some(&new), &file).expect("reads").rows;
         assert_eq!(find(&rows, "<style>", Some("text")).anchor, Some(LineRef { old: None, new: Some(7) }));

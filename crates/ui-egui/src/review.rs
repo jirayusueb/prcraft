@@ -1499,7 +1499,8 @@ impl Ready {
                     ui.spacing_mut().icon_spacing = 6.0;
                     components::key_cap(ui, &keymap::label(ui, "review.viewed"));
                     let mut checked = viewed;
-                    let check = ui.add(egui::Checkbox::new(&mut checked, RichText::new("Viewed").size(12.0 * theme::sz(ui).body / 13.5).color(p.graphite)));
+                    let check =
+                        ui.add(egui::Checkbox::new(&mut checked, RichText::new("Viewed").size(12.0 * theme::sz(ui).body / 13.5).color(p.graphite)));
                     if check.changed() {
                         acts.push(Act::ToggleViewed(i));
                     }
@@ -1516,7 +1517,8 @@ impl Ready {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
                         let counts = (format!("+{}", file.additions), format!("−{}", file.deletions));
-                        let room = ui.available_width() - 20.0 - components::mono_width(ui, &counts.0, 11.5) - components::mono_width(ui, &counts.1, 11.5);
+                        let room =
+                            ui.available_width() - 20.0 - components::mono_width(ui, &counts.0, 11.5) - components::mono_width(ui, &counts.1, 11.5);
                         let renamed = file.old_path.as_deref().map(|old| format!("{old} → ")).unwrap_or_default();
                         components::mono_label_cut(ui, format!("{renamed}{}", file.path), 12.5, p.graphite, room);
                         components::mono_label(ui, counts.0, 11.5, p.moss_text);
@@ -1742,8 +1744,10 @@ impl Ready {
         match target {
             Some((item, _)) => self.open_block_composer(ctx, self.file, item),
             None => {
-                self.notice =
-                    Some(format!("This file has no changed block or markup row to comment on. Click one, then press {}.", keymap::label(ctx, "review.comment")))
+                self.notice = Some(format!(
+                    "This file has no changed block or markup row to comment on. Click one, then press {}.",
+                    keymap::label(ctx, "review.comment")
+                ))
             }
         }
     }
@@ -2524,7 +2528,10 @@ impl Ready {
                             self.draft_focus = Some(draft.id);
                             self.focus_draft = true;
                         }
-                        None => self.notice = Some(format!("No draft here to edit. Press {} to go to the next draft.", keymap::label(ctx, "review.next_draft"))),
+                        None => {
+                            self.notice =
+                                Some(format!("No draft here to edit. Press {} to go to the next draft.", keymap::label(ctx, "review.next_draft")))
+                        }
                     }
                     Ok(())
                 }

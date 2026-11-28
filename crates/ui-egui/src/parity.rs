@@ -616,7 +616,6 @@ fn svg_app() -> PrCraftApp {
     review_over(screen, Runs::default())
 }
 
-
 /// Figma frame 103: lines 42 to 44 of `invoicer.go` selected, ready for a right-click.
 fn lines_app() -> PrCraftApp {
     let (screen, runs) = review_screen(false);

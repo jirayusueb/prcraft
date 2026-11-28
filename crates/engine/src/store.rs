@@ -425,7 +425,15 @@ mod tests {
     #[test]
     fn the_pending_list_holds_only_changes_with_something_and_names_the_files_it_could_not_read() {
         let dir = temp_dir("pending");
-        let draft = Draft { id: 0, path: "a.go".into(), old_path: None, start: None, end: LineRef { old: None, new: Some(1) }, body: "x".into(), on_rendered: false };
+        let draft = Draft {
+            id: 0,
+            path: "a.go".into(),
+            old_path: None,
+            start: None,
+            end: LineRef { old: None, new: Some(1) },
+            body: "x".into(),
+            on_rendered: false,
+        };
         let with_draft = ChangeRef { forge: Forge::GitHub, repo: "acme/api".into(), number: 482, host: None };
         let on_host = ChangeRef { forge: Forge::GitLab, repo: "group/sub/proj".into(), number: 7, host: Some("gitlab.acme.dev".into()) };
         let untouched = ChangeRef { number: 9, ..with_draft.clone() };

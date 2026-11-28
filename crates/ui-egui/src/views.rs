@@ -510,7 +510,8 @@ impl Views {
     /// The item `C` comments on: the cursor, else the first changed one, with the source line it posts to.
     pub(crate) fn comment_target(&self, path: &str) -> Option<(usize, Option<LineRef>)> {
         let stops = self.stops(path)?;
-        let first_changed = stops.iter().position(|(changed, anchor)| *changed && anchor.is_some()).or_else(|| stops.iter().position(|(changed, _)| *changed));
+        let first_changed =
+            stops.iter().position(|(changed, anchor)| *changed && anchor.is_some()).or_else(|| stops.iter().position(|(changed, _)| *changed));
         let item = self.cursor.get(path).copied().or(first_changed)?;
         stops.get(item).map(|(_, anchor)| (item, *anchor))
     }
@@ -600,7 +601,9 @@ fn load_svg(base: Version<Vec<u8>>, head: Version<Vec<u8>>, file: &FileDiff) -> 
 /// One side of an SVG as text for its markup rows; `None` when the change adds or deletes the file.
 fn svg_text<'a>(version: &'a Version<Vec<u8>>, what: &str) -> Result<Option<&'a str>, String> {
     match version {
-        Version::Shown(bytes) => std::str::from_utf8(bytes).map(|t| Some(t.trim_start_matches('\u{feff}'))).map_err(|_| format!("{what} is not UTF-8 text")),
+        Version::Shown(bytes) => {
+            std::str::from_utf8(bytes).map(|t| Some(t.trim_start_matches('\u{feff}'))).map_err(|_| format!("{what} is not UTF-8 text"))
+        }
         Version::Absent => Ok(None),
         Version::Failed(error) => Err(format!("could not read {what}: {error}")),
     }
@@ -749,7 +752,8 @@ fn draw_svg(bytes: &[u8]) -> Result<Vector, String> {
     let shown = egui::vec2(width * scale, height * scale);
     // Twice the shown size, so edges stay sharp on a Retina screen.
     let (px_w, px_h) = ((shown.x * 2.0).ceil().max(1.0) as u32, (shown.y * 2.0).ceil().max(1.0) as u32);
-    let pixmap = craft::svg::tree::draw::render(&tree, Transform::from_scale(scale * 2.0, scale * 2.0), px_w, px_h, 0, 256 << 20).map_err(|r| r.message)?;
+    let pixmap =
+        craft::svg::tree::draw::render(&tree, Transform::from_scale(scale * 2.0, scale * 2.0), px_w, px_h, 0, 256 << 20).map_err(|r| r.message)?;
     let image = ColorImage::from_rgba_premultiplied([px_w as usize, px_h as usize], pixmap.data());
     let view_box = pr_craft_core::svg::view_box_size(&source);
     let (width, height) = view_box.unwrap_or((width, height));
@@ -1623,7 +1627,8 @@ mod tests {
         let vector = render_svg(svg).expect("a valid SVG draws");
         assert_eq!((vector.width, vector.height), (24.0, 12.0));
         assert!(vector.shown.x > vector.width && vector.shown.x <= theme::SVG_ROOM_W, "an icon grows to be seen: {:?}", vector.shown);
-        let big = render_svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1000"><rect width="5" height="5"/></svg>"#).expect("draws");
+        let big =
+            render_svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1000"><rect width="5" height="5"/></svg>"#).expect("draws");
         assert!(big.shown.x <= theme::SVG_ROOM_W && big.shown.y <= theme::SVG_ROOM_H && !big.view_box, "{:?}", big.shown);
         assert!(vector.notes.iter().any(|n| n.contains("script")), "{:?}", vector.notes);
         assert!(render_svg(b"<svg").is_err());

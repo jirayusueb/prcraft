@@ -1240,7 +1240,10 @@ fn card_content(ui: &mut Ui, kind: CardKind, who: &str, tag_text: &str, add: imp
 
 /// What one side of an SVG compare shows in its box.
 pub(crate) enum SvgPicture<'a> {
-    Drawn { texture: egui::TextureId, size: egui::Vec2 },
+    Drawn {
+        texture: egui::TextureId,
+        size: egui::Vec2,
+    },
     /// Nothing drawn, and why: the change adds or deletes the file, or the side could not be read or drawn.
     Note(&'a str),
 }

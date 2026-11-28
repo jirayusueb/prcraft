@@ -138,8 +138,24 @@ mod tests {
         let line = |n| LineRef { old: None, new: Some(n) };
         let review = LocalReview {
             drafts: vec![
-                Draft { id: 0, path: "billing/invoicer.go".into(), old_path: None, start: Some(line(42)), end: line(44), body: "Lock first.".into(), on_rendered: false },
-                Draft { id: 1, path: "db/0087.sql".into(), old_path: None, start: None, end: line(3), body: "Add a note.".into(), on_rendered: false },
+                Draft {
+                    id: 0,
+                    path: "billing/invoicer.go".into(),
+                    old_path: None,
+                    start: Some(line(42)),
+                    end: line(44),
+                    body: "Lock first.".into(),
+                    on_rendered: false,
+                },
+                Draft {
+                    id: 1,
+                    path: "db/0087.sql".into(),
+                    old_path: None,
+                    start: None,
+                    end: line(3),
+                    body: "Add a note.".into(),
+                    on_rendered: false,
+                },
             ],
             verdict: Verdict::RequestChanges,
             body: "Two things.".into(),
