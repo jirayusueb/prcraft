@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use pr_craft_core::Forge;
 use pr_craft_core::redact::redact;
-use pr_craft_forge::{Login, bounded};
+use pr_craft_forge::{Login, bounded, tool};
 use serde_json::{Value, json};
 
 use crate::{CommandError, log, store};
@@ -36,12 +36,27 @@ fn forges() -> Vec<String> {
                     .join(", "),
                 Err(Login::LoggedOut { .. }) => "signed out".into(),
                 Err(Login::CliMissing { .. }) => "CLI missing".into(),
+                Err(Login::CliOld { message, .. }) => message,
+                Err(Login::Scope { fix }) => format!("token lacks a scope, run `{fix}`"),
                 Err(Login::Failed { error }) => format!("failed: {error}"),
                 Err(Login::LoggedIn) => "signed in".into(),
             };
             format!("{}: {state}", forge.cli())
         })
         .collect()
+}
+
+/// One line per external tool: where it was found and its version.
+fn tools() -> Vec<String> {
+    ["git", "gh", "glab", "claude"]
+        .map(|name| {
+            let path = tool::resolve(name);
+            let found = path
+                .is_file()
+                .then(|| format!("{} {}", path.display(), tool::version(name).map_or_else(|| "version unknown".into(), |v| v.to_string())));
+            format!("{name}: {}", found.unwrap_or_else(|| "not found".into()))
+        })
+        .into()
 }
 
 /// The text with every secret shape masked and `home` written as `~`.
@@ -53,10 +68,10 @@ fn clean(text: &str, home: Option<&str>) -> String {
     }
 }
 
-fn block(version: &str, commit: &str, macos: &str, data_version: Option<u32>, forges: &[String], log: &[String]) -> String {
+fn block(version: &str, commit: &str, macos: &str, data_version: Option<u32>, forges: &[String], tools: &[String], log: &[String]) -> String {
     let data = data_version.map_or_else(|| "none yet".to_string(), |v| v.to_string());
     let mut text = format!("PR Craft {version} ({commit})\nmacOS {macos}\ndata version {data}\n");
-    for forge in forges {
+    for forge in forges.iter().chain(tools) {
         text.push_str(forge);
         text.push('\n');
     }
@@ -75,14 +90,15 @@ struct Inputs<'a> {
     macos: &'a str,
     data_version: Option<u32>,
     forges: &'a [String],
+    tools: &'a [String],
     log: &'a [String],
     home: Option<&'a str>,
 }
 
 /// The answer of `diagnostics.get` from its inputs: the fields, and `text` ready to paste.
 fn assemble(i: &Inputs<'_>) -> Value {
-    let text = clean(&block(i.version, i.commit, i.macos, i.data_version, i.forges, i.log), i.home);
-    json!({ "version": i.version, "commit": i.commit, "macos": i.macos, "data_version": i.data_version, "forges": i.forges, "text": text })
+    let text = clean(&block(i.version, i.commit, i.macos, i.data_version, i.forges, i.tools, i.log), i.home);
+    json!({ "version": i.version, "commit": i.commit, "macos": i.macos, "data_version": i.data_version, "forges": i.forges, "tools": i.tools, "text": text })
 }
 
 pub fn get() -> Result<Value, CommandError> {
@@ -95,6 +111,7 @@ pub fn get() -> Result<Value, CommandError> {
         macos: &macos(),
         data_version,
         forges: &forges(),
+        tools: &tools(),
         log: &log,
         home: home.as_deref(),
     };
@@ -110,11 +127,21 @@ mod tests {
         let token = format!("ghp_{}", "a1B2".repeat(9));
         let log = vec![format!("2026-11-28T10:00:00Z review.open repo=/Users/ada/work {token} ok 4ms")];
         let forges = ["gh: github.com signed in".to_string()];
-        let inputs =
-            Inputs { version: "0.1.0", commit: "abc123", macos: "26.1", data_version: Some(1), forges: &forges, log: &log, home: Some("/Users/ada") };
+        let tools = ["gh: /opt/homebrew/bin/gh 2.89.0".to_string()];
+        let inputs = Inputs {
+            version: "0.1.0",
+            commit: "abc123",
+            macos: "26.1",
+            data_version: Some(1),
+            forges: &forges,
+            tools: &tools,
+            log: &log,
+            home: Some("/Users/ada"),
+        };
         let answer = assemble(&inputs);
         let text = answer["text"].as_str().expect("text");
         assert!(text.contains("PR Craft 0.1.0 (abc123)") && text.contains("data version 1"), "{text}");
+        assert!(text.contains("gh: /opt/homebrew/bin/gh 2.89.0"), "{text}");
         assert!(text.contains("~/work"), "{text}");
         assert!(!text.contains("/Users/ada"), "{text}");
         assert!(!text.contains(&token), "{text}");

@@ -459,6 +459,8 @@ impl PrCraftApp {
                             let (problem, fix) = match login {
                                 Login::LoggedOut { fix } => (format!("{cli} is not logged in. Run this in a terminal, then Re-check."), Some(fix)),
                                 Login::CliMissing { fix } => (format!("{cli} is not installed."), Some(fix)),
+                                Login::CliOld { message, fix } => (format!("{message}. Run this in a terminal, then Re-check."), Some(fix)),
+                                Login::Scope { fix } => (format!("{cli}'s token lacks a scope. Run this in a terminal, then Re-check."), Some(fix)),
                                 Login::Failed { error } => (format!("{cli} could not run: {error}."), None),
                                 Login::LoggedIn => (String::new(), None),
                             };

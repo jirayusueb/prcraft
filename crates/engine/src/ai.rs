@@ -19,6 +19,7 @@ use pr_craft_core::review::{Anchor, LocalReview};
 use pr_craft_core::run::{AiDraft, DraftState, Node, NodeStatus, Run, RunAgent, RunState, Skipped};
 use pr_craft_core::{ChangeRef, Forge, Utc};
 use pr_craft_forge::review as forge;
+use pr_craft_forge::tool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -60,7 +61,8 @@ pub struct Env {
 impl Env {
     pub fn from_process() -> Result<Env, CommandError> {
         let dir = store::data_dir().map_err(CommandError::read)?;
-        Ok(Env { dir, program: std::env::var_os("PR_CRAFT_CLAUDE").map_or_else(|| PathBuf::from("claude"), PathBuf::from) })
+        let named = std::env::var_os("PR_CRAFT_CLAUDE").map_or_else(|| PathBuf::from("claude"), PathBuf::from);
+        Ok(Env { dir, program: find_program(&named).unwrap_or(named) })
     }
 }
 
@@ -174,11 +176,15 @@ fn engine_view(env: &Env, settings: EngineSettings) -> EngineView {
     EngineView { settings, engines }
 }
 
+/// The engine program: a path is taken as it is; a bare name is searched on `PATH`, the Homebrew folders and `~/.local/bin`
+/// (where Claude Code's own installer puts it).
 fn find_program(program: &Path) -> Option<PathBuf> {
     if program.components().count() > 1 {
         return program.is_file().then(|| program.to_path_buf());
     }
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|folder| folder.join(program)).find(|path| path.is_file())
+    let local = std::env::var("HOME").map(|home| format!("{home}/.local/bin")).unwrap_or_default();
+    let folders: Vec<&str> = tool::HOMEBREW.iter().copied().chain(Some(local.as_str()).filter(|l| !l.is_empty())).collect();
+    tool::find(&program.to_string_lossy(), &folders, std::env::var_os("PATH").as_deref())
 }
 
 /// `ai.engine.set`: every field is optional; an object field (`stuck`, `spawn`, `read`) replaces that whole group.

@@ -129,7 +129,7 @@ fn read_source(forge: Forge) -> MineSource {
             let (signed, out): (Vec<_>, Vec<_>) = hosts.into_iter().partition(|h| h.signed_in);
             let signed_out = out.into_iter().map(|h| h.name).collect();
             if signed.is_empty() {
-                MineState::Paused { login: Login::LoggedOut { fix: format!("{} auth login", forge.cli()) } }
+                MineState::Paused { login: pr_craft_forge::signed_out(forge) }
             } else {
                 let answers: Vec<_> = std::thread::scope(|scope| {
                     let jobs: Vec<_> = signed.iter().map(|h| (h.name.clone(), scope.spawn(move || read::mine_on(forge, &h.name)))).collect();

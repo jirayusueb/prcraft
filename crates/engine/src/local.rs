@@ -5,7 +5,6 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -20,6 +19,7 @@ use pr_craft_core::settings::Settings;
 use pr_craft_forge::bounded;
 use pr_craft_forge::checkout::{NO_ROOM_FOR_HOOKS, no_hooks};
 use pr_craft_forge::review as forge;
+use pr_craft_forge::tool::{self, find};
 use serde::Serialize;
 
 use crate::{CommandError, settings};
@@ -54,7 +54,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 fn git_for(dir: &Path, args: &[&str], limit: Duration) -> Result<String, String> {
     let hooks_off = no_hooks().ok_or(NO_ROOM_FOR_HOOKS)?;
     let out = bounded::run(
-        Command::new("git")
+        Command::new(tool::resolve("git"))
             .args(["--no-optional-locks", "-c", "core.precomposeunicode=true"])
             .arg("-C")
             .arg(dir)
@@ -542,7 +542,7 @@ fn unclean_reason(target: &Path, changes: &[String]) -> String {
 fn git_version() -> Option<(u32, u32)> {
     static VERSION: OnceLock<(u32, u32)> = OnceLock::new();
     cached(&VERSION, || {
-        let out = bounded::run(Command::new("git").arg("--version"), READ).ok()?;
+        let out = bounded::run(Command::new(tool::resolve("git")).arg("--version"), READ).ok()?;
         checkout::parse_git_version(&String::from_utf8_lossy(&out.stdout))
     })
 }
@@ -716,16 +716,6 @@ fn resolve_in(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(file)
 }
 
-fn is_executable(path: &Path) -> bool {
-    path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-}
-
-/// The command `tool` names: on the absolute folders of `path`, else at one of `fallbacks`.
-fn find_tool(tool: &str, fallbacks: &[&str], path: Option<&OsStr>) -> Option<PathBuf> {
-    let listed = path.into_iter().flat_map(std::env::split_paths).filter(|dir| dir.is_absolute()).map(|dir| dir.join(tool));
-    listed.chain(fallbacks.iter().map(PathBuf::from)).find(|candidate| is_executable(candidate))
-}
-
 fn launch(editor: Editor, root: &Path, path: Option<&str>, line: Option<u32>, search: Option<&OsStr>) -> Result<Opened, String> {
     let (file, line) = match editor {
         Editor::Terminal => (None, 1),
@@ -735,7 +725,7 @@ fn launch(editor: Editor, root: &Path, path: Option<&str>, line: Option<u32>, se
             (Some(resolve_in(root, path)?), line)
         }
     };
-    let tool = find_tool(editor.tool(), editor.fallbacks(), search)
+    let tool = find(editor.tool(), editor.fallbacks(), search)
         .ok_or_else(|| format!("{} is not installed here: no `{}` command was found. {}", editor.label(), editor.tool(), editor.fix()))?;
     let root = root.canonicalize().map_err(|e| format!("{} cannot be read: {e}", root.display()))?;
     let args = editor::args(editor, &root, file.as_deref().unwrap_or(&root), line);
@@ -751,6 +741,7 @@ fn launch(editor: Editor, root: &Path, path: Option<&str>, line: Option<u32>, se
 mod tests {
     use std::cell::Cell;
     use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use pr_craft_core::Forge;
@@ -1251,23 +1242,6 @@ mod tests {
         for bad in ["../outside/secret.txt", "src/../../outside/secret.txt", "/etc/hosts", "link/secret.txt", "src", "src/missing.rs", ""] {
             assert!(resolve_in(&root, bad).is_err(), "{bad:?} must not open");
         }
-    }
-
-    #[test]
-    fn a_tool_is_found_on_an_absolute_folder_of_the_path_and_only_when_it_runs() {
-        let tmp = Tmp::new();
-        let (bin, other) = (tmp.0.join("bin"), tmp.0.join("other"));
-        fs::create_dir_all(&bin).expect("dir");
-        fs::create_dir_all(&other).expect("dir");
-        let tool = bin.join("fake-editor");
-        fs::write(&tool, "#!/bin/sh\n").expect("script");
-        fs::write(other.join("fake-editor"), "not a program").expect("file");
-        let search = std::env::join_paths([other.clone(), bin.clone(), PathBuf::from("relative")]).expect("path");
-        assert_eq!(find_tool("fake-editor", &[], Some(&search)), None, "no execute bit, nothing found");
-        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod");
-        assert_eq!(find_tool("fake-editor", &[], Some(&search)), Some(tool.clone()));
-        assert_eq!(find_tool("fake-editor", &[tool.to_str().expect("utf8")], None), Some(tool), "a fallback is used when the path has none");
-        assert_eq!(find_tool("fake-editor", &[], None), None);
     }
 
     #[test]

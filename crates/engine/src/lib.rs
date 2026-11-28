@@ -544,7 +544,7 @@ pub fn inbox_source(forge: Forge) -> InboxSource {
             let (signed, out): (Vec<_>, Vec<_>) = hosts.into_iter().partition(|h| h.signed_in);
             let signed_out = out.into_iter().map(|h| h.name).collect();
             if signed.is_empty() {
-                SourceState::Paused { login: Login::LoggedOut { fix: format!("{} auth login", forge.cli()) } }
+                SourceState::Paused { login: pr_craft_forge::signed_out(forge) }
             } else {
                 let answers: Vec<_> = std::thread::scope(|scope| {
                     let jobs: Vec<_> =
