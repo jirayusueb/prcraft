@@ -246,6 +246,7 @@ mod tests {
             head_sha: "abc1234".into(),
             base_sha: None,
             diff_refs: None,
+            finished: false,
         };
         let draft = Draft {
             id: 1,

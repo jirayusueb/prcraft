@@ -463,6 +463,7 @@ mod tests {
             head_sha: "abc1234".into(),
             base_sha: None,
             diff_refs: None,
+            finished: false,
         };
         ReviewView {
             change: ChangeRef { forge: Forge::GitHub, repo: "a/b".into(), number: 1, host: None },
