@@ -1142,11 +1142,15 @@ pub(crate) mod tests {
                     prompt_hash: (*h).into(),
                     sent: true,
                     note: None,
+                    estimated_tokens: 1,
                 })
                 .collect(),
             withheld: Vec::new(),
             read: pr_craft_core::redact::ReadRules::default(),
             notice: String::new(),
+            estimated_tokens: hashes.len() as u64,
+            used_today: 0,
+            daily_token_ceiling: None,
         }
     }
 

@@ -53,6 +53,8 @@ pub struct Settings {
     notice: Option<Result<String, String>>,
     /// The never-send pattern being typed, global rules.
     pattern: String,
+    /// The daily token ceiling being typed; `None` until the page first draws it.
+    ceiling: Option<String>,
     preview_at: usize,
     preview: Fetch<ReviewPreview>,
     agents: AgentsPage,
@@ -93,6 +95,7 @@ impl Settings {
             view: ai::engine_get(),
             notice: None,
             pattern: String::new(),
+            ceiling: None,
             preview_at: 0,
             preview: Fetch::Idle,
             agents: AgentsPage::load(),
@@ -112,6 +115,7 @@ impl Settings {
             view: Ok(view),
             notice: None,
             pattern: String::new(),
+            ceiling: None,
             preview_at: 0,
             preview: Fetch::Idle,
             agents,
@@ -365,6 +369,21 @@ impl Settings {
         if changed {
             patch.insert("spawn".into(), json!(spawn));
         }
+        components::form_row(ui, "Daily token ceiling", "Estimated input tokens per day (≈ bytes ÷ 4). Empty means no ceiling.", |ui| {
+            let text = self.ceiling.get_or_insert_with(|| settings.daily_token_ceiling.map(|n| n.to_string()).unwrap_or_default());
+            let field = ui.add(TextEdit::singleline(text).hint_text("No ceiling").desired_width(160.0));
+            components::name_field(ui, &field, "Daily token ceiling");
+            if field.lost_focus() {
+                match text.trim().parse::<u64>() {
+                    Ok(n) if n > 0 => patch.insert("daily_token_ceiling".into(), json!(n)),
+                    _ if text.trim().is_empty() => patch.insert("daily_token_ceiling".into(), Value::Null),
+                    _ => {
+                        *text = settings.daily_token_ceiling.map(|n| n.to_string()).unwrap_or_default();
+                        None
+                    }
+                };
+            }
+        });
         ui.add_space(theme::SPACE_2);
         note(
             ui,
@@ -783,6 +802,7 @@ fn scope_name(scope: ReadScope) -> &'static str {
 
 /// The preview of `ai.review.preview`: the notice, the files no prompt carries, and each prompt in full (frame 101).
 pub(crate) fn preview_ui(ui: &mut Ui, preview: &ReviewPreview) {
+    note(ui, &token_line(preview));
     ui.label(RichText::new(&preview.notice).size(theme::sz(ui).body).color(theme::pal(ui).ember_text));
     if preview.prompts.is_empty() {
         note(ui, "No prompt would be sent.");
@@ -823,6 +843,15 @@ pub(crate) fn preview_ui(ui: &mut Ui, preview: &ReviewPreview) {
         for skipped in &preview.withheld {
             note(ui, &format!("{}  ·  {}", skipped.path, skipped.reason));
         }
+    }
+}
+
+/// "Sends ≈Y input tokens", and with a ceiling, how much of it is used today.
+fn token_line(preview: &ReviewPreview) -> String {
+    let sends = format!("Sends ≈{} input tokens", preview.estimated_tokens);
+    match preview.daily_token_ceiling {
+        Some(ceiling) => format!("{sends}. ≈{} of {ceiling} used today.", preview.used_today),
+        None => format!("{sends}."),
     }
 }
 
@@ -915,6 +944,16 @@ pub(crate) fn row_job(ui: &Ui, name: &str, meta: &str, selected: bool) -> Layout
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_line_says_what_is_sent_and_what_is_used() {
+        let mut preview = crate::ai::tests::prompts(&["a"]);
+        preview.estimated_tokens = 1200;
+        assert_eq!(token_line(&preview), "Sends ≈1200 input tokens.");
+        preview.daily_token_ceiling = Some(5000);
+        preview.used_today = 300;
+        assert_eq!(token_line(&preview), "Sends ≈1200 input tokens. ≈300 of 5000 used today.");
+    }
 
     #[test]
     fn a_long_prompt_line_is_cut_on_a_character_boundary_and_the_rest_is_counted() {

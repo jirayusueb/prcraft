@@ -924,6 +924,12 @@ fn the_inbox_names_its_navigation_rows_and_actions_to_assistive_technology() {
 }
 
 #[test]
+fn the_ai_engine_page_names_the_daily_token_ceiling_field() {
+    let harness = harness(settings_app(Tab::Engine), 1440.0, 900.0);
+    assert!(named(&harness, Role::TextInput, "Daily token ceiling"), "the ceiling field is named by its visible label");
+}
+
+#[test]
 fn offline_and_sync_offers_copy_diagnostics_by_name() {
     let harness = harness(settings_app(Tab::Sync), 1440.0, 900.0);
     assert!(named(&harness, Role::Button, "Copy diagnostics"), "the report block has a button the keyboard and screen readers reach");
