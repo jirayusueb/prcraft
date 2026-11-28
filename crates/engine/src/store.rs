@@ -318,6 +318,15 @@ fn stamp(dir: &Path) -> Result<(), String> {
     fs::write(dir.join("data-version"), format!("{DATA_VERSION}\n")).map_err(fail)
 }
 
+pub fn load_tally(dir: &Path) -> Result<crate::tally::Tally, String> {
+    load(&dir.join("tally.json"))
+}
+
+pub fn save_tally(dir: &Path, tally: &crate::tally::Tally) -> Result<(), String> {
+    stamp(dir)?;
+    save(&dir.join("tally.json"), tally)
+}
+
 /// Appearance, accessibility and sync choices (Settings → Appearance and the pages after it).
 pub fn load_settings(dir: &Path) -> Result<AppSettings, String> {
     load(&dir.join("settings.json"))

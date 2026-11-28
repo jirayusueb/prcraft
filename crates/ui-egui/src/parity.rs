@@ -898,6 +898,18 @@ pub(crate) fn named(harness: &Harness<'_, PrCraftApp>, role: Role, visible: &str
 }
 
 #[test]
+fn pressing_open_on_the_forge_in_the_inbox_counts_one_open_with_its_origin() {
+    let mut harness = harness(inbox_app(), 1440.0, 900.0);
+    let first = inbox_changes().remove(0);
+    harness.get_by_label_contains(&format!("Open on {}", first.forge.name())).click();
+    harness.run_steps(5);
+    let bumped = crate::BUMPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let found =
+        bumped.iter().any(|b| b["screen"] == "inbox" && b["repo"] == first.repo.as_str() && b["number"] == first.number && b["file_ext"].is_null());
+    assert!(found, "no bump for {} in {bumped:?}", first.repo);
+}
+
+#[test]
 fn the_inbox_names_its_navigation_rows_and_actions_to_assistive_technology() {
     let harness = harness(inbox_app(), 1440.0, 900.0);
     let first = inbox_changes().remove(0);

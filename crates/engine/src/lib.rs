@@ -15,6 +15,7 @@ pub mod settings;
 pub mod share;
 pub mod stack;
 mod store;
+pub mod tally;
 pub mod thread;
 pub mod turn;
 pub mod update;
@@ -95,12 +96,14 @@ const fn join<const N: usize>(parts: &[&[&'static str]]) -> [&'static str; N] {
 }
 
 /// Every command id [`run`] takes.
-pub const COMMANDS: &[&str] = &join::<{ BASE.len() + ai::COMMANDS.len() + mine::COMMANDS.len() + update::COMMANDS.len() }>(&[
-    BASE,
-    &ai::COMMANDS,
-    &mine::COMMANDS,
-    &update::COMMANDS,
-]);
+pub const COMMANDS: &[&str] =
+    &join::<{ BASE.len() + ai::COMMANDS.len() + mine::COMMANDS.len() + update::COMMANDS.len() + tally::COMMANDS.len() }>(&[
+        BASE,
+        &ai::COMMANDS,
+        &mine::COMMANDS,
+        &update::COMMANDS,
+        &tally::COMMANDS,
+    ]);
 
 /// Which way a failed read or write of the files on this Mac was going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +473,7 @@ fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
             Ok(serde_json::to_value(local::open_editor(&p.change, p.editor, p.path.as_deref(), p.line)?)?)
         }
         id if ai::COMMANDS.contains(&id) => ai::command(&ai::Env::from_process()?, id, value),
+        id if tally::COMMANDS.contains(&id) => tally::command(id, value).unwrap_or_else(|| Err(CommandError::Unknown(id.to_string()))),
         id if update::COMMANDS.contains(&id) => update::command(id, value).unwrap_or_else(|| Err(CommandError::Unknown(id.to_string()))),
         id if mine::COMMANDS.contains(&id) => mine::command(id, value).unwrap_or_else(|| Err(CommandError::Unknown(id.to_string()))),
         other => Err(CommandError::Unknown(other.to_string())),

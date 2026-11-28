@@ -1,7 +1,7 @@
 use super::{
-    Act, AiSheet, BannerKind, ChangeRef, CommitAct, Context, Fetch, FileStatus, Focus, LocalAct, LocalReview, Margin, OpenUrl, Outcome, Ready,
-    Receiver, ReviewThread, RichText, Runs, Selection, ShareSheet, Target, TextEdit, ThreadAct, TryRecvError, Ui, UnderRow, WAIT_FOR_FORGE, activity,
-    card, commits_engine, components, drop_block, egui, engine, file_view, keymap, make_current, menu, mpsc, parent_dir, pick, theme, thread_engine,
+    Act, AiSheet, BannerKind, ChangeRef, CommitAct, Context, Fetch, FileStatus, Focus, LocalAct, LocalReview, Margin, Outcome, Ready, Receiver,
+    ReviewThread, RichText, Runs, Selection, ShareSheet, Target, TextEdit, ThreadAct, TryRecvError, Ui, UnderRow, WAIT_FOR_FORGE, activity, card,
+    commits_engine, components, drop_block, egui, engine, file_view, keymap, make_current, menu, mpsc, parent_dir, pick, theme, thread_engine,
     threads, turn,
 };
 
@@ -512,12 +512,12 @@ impl Ready {
                     self.refilter();
                     Ok(())
                 }
-                Act::OpenUrl(url) => {
-                    ctx.open_url(OpenUrl::new_tab(url));
+                Act::OpenUrl(url, path) => {
+                    crate::open_on_forge(ctx, &url, "review", &self.view.change, Some(&path));
                     Ok(())
                 }
-                Act::OpenOnForge => {
-                    ctx.open_url(OpenUrl::new_tab(&self.view.meta.url));
+                Act::OpenOnForge(path) => {
+                    crate::open_on_forge(ctx, &self.view.meta.url, "review", &self.view.change, path.as_deref());
                     Ok(())
                 }
             };
@@ -804,6 +804,12 @@ impl Ready {
         let id = self.cards.current.as_deref()?;
         let order = self.thread_order();
         order.iter().find(|o| o.2 == id && o.0 == self.file && self.visible.contains(&o.0)).map(|o| o.2.clone())
+    }
+
+    /// The file of the stepped thread, for the tally of an open on the forge.
+    pub(super) fn thread_path(&self) -> Option<String> {
+        let (Fetch::Ready(list), Some(id)) = (&self.threads, self.cards.current.as_deref()) else { return None };
+        list.threads.iter().find(|t| t.id == id).map(|t| t.path.clone())
     }
 
     /// Forgets the stepped thread once the reader is on another file or the filter hides its file.

@@ -384,7 +384,7 @@ impl PrCraftApp {
                 let (change, title) = (change.change_ref(), change.title.clone());
                 self.open_review(ctx, change, title);
             }
-            "forge" => ctx.open_url(OpenUrl::new_tab(&change.url)),
+            "forge" => open_on_forge(ctx, &change.url, "inbox", &change.change_ref(), None),
             "link" => {
                 ctx.copy_text(change.url.clone());
                 self.runs.status = Some(Ok("Copied the link.".to_string()));
@@ -1662,6 +1662,31 @@ fn start_sync(ctx: &Context, forge: Forge) -> Sync {
     Sync::Checking(rx)
 }
 
+/// Opens a forge page in the browser and counts it (`tally.bump`) on its own thread, so the frame never waits; a failed
+/// count is ignored. `screen` is where the reader was; `file` is the path the open was about, if any.
+pub(crate) fn open_on_forge(ctx: &Context, url: &str, screen: &str, change: &pr_craft_core::ChangeRef, file: Option<&str>) {
+    ctx.open_url(OpenUrl::new_tab(url));
+    let file_ext = file.and_then(|f| std::path::Path::new(f).extension()).and_then(|e| e.to_str());
+    let params = serde_json::json!({ "screen": screen, "forge": change.forge, "repo": change.repo, "number": change.number, "file_ext": file_ext });
+    count(params);
+}
+
+/// Tests must not write the real data folder (`unsafe` is forbidden, so they cannot point the engine at a temp one), so they keep the bumps here.
+#[cfg(test)]
+pub(crate) static BUMPED: std::sync::Mutex<Vec<serde_json::Value>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn count(params: serde_json::Value) {
+    BUMPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(params);
+}
+
+#[cfg(not(test))]
+fn count(params: serde_json::Value) {
+    std::thread::spawn(move || {
+        let _ = pr_craft_engine::run("tally.bump", &params);
+    });
+}
+
 /// Starts `inbox.back_to_you` for one forge on its own thread: it reads every change the user reviewed.
 fn start_back(ctx: &Context, forge: Forge) -> BackFetch {
     let (tx, rx) = mpsc::channel();
@@ -1877,7 +1902,7 @@ fn open_buttons(ui: &mut Ui, pane: Rect, change: &Change) -> bool {
         ui.spacing_mut().item_spacing.x = 8.0;
         let open = Pill::new(PillKind::Primary, "Open review").key(ui, "inbox.open").show(ui).clicked();
         if Pill::new(PillKind::Secondary, &format!("Open on {}", change.forge.name())).show(ui).clicked() {
-            ui.ctx().open_url(OpenUrl::new_tab(&change.url));
+            open_on_forge(ui.ctx(), &change.url, "inbox", &change.change_ref(), None);
         }
         open
     })

@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use craft::egui::{self, Align, Color32, Context, Layout, Margin, OpenUrl, Rect, RichText, ScrollArea, Stroke, TextEdit, Ui, UiBuilder, vec2};
+use craft::egui::{self, Align, Color32, Context, Layout, Margin, Rect, RichText, ScrollArea, Stroke, TextEdit, Ui, UiBuilder, vec2};
 use pr_craft_core::mine::{CheckState, Decision, MergeMethod, MergeState, Mine, MineDetail};
 use pr_craft_core::thread::ReviewThread;
 use pr_craft_core::{ChangeRef, Forge};
@@ -998,7 +998,7 @@ impl Panel {
                 self.send_merge(ctx, &head, Some(merge));
             }
             Kind::Ready => self.send_ready(ctx, true),
-            Kind::Conflict => ctx.open_url(OpenUrl::new_tab(&m.change.url)),
+            Kind::Conflict => crate::open_on_forge(ctx, &m.change.url, "conflict", &m.change.change_ref(), None),
             Kind::Ask => self.ask_again(ctx, m),
             Kind::Review => out.review = true,
             Kind::Merge | Kind::Queue if self.can_merge(m) => {

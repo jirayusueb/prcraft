@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use craft::egui::{self, Align, Color32, Context, FontId, Layout, Margin, OpenUrl, Rect, RichText, ScrollArea, Sense, Ui, vec2};
+use craft::egui::{self, Align, Color32, Context, FontId, Layout, Margin, Rect, RichText, ScrollArea, Sense, Ui, vec2};
 use pr_craft_core::ChangeRef;
 use pr_craft_core::mine::{Check, CheckState, Checks};
 use pr_craft_engine::mine::{self as engine, ChecksList, LogResult};
@@ -358,7 +358,7 @@ impl ChecksScreen {
         if let Some(url) = check.url.as_deref().filter(|u| trusted(u, self.change.host_name()))
             && Pill::new(PillKind::Quiet, &format!("Open on {}", self.change.forge.name())).small().show(ui).clicked()
         {
-            ctx.open_url(OpenUrl::new_tab(url));
+            crate::open_on_forge(ctx, url, "checks", &self.change, None);
         }
         if self.first_failing().is_some() && Pill::new(PillKind::Quiet, "Jump to first failing line").small().show(ui).clicked() {
             self.scroll = self.first_failing();
