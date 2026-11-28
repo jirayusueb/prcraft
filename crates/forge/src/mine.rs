@@ -408,15 +408,17 @@ fn graphql(host: &str, query: &str, fields: &[(&str, String)]) -> Result<Vec<u8>
 
 /// The user's open changes on `host`, newest update first, and whether the host holds more than one page ([`PAGE`]). GitHub reads
 /// everything in one search; GitLab reads the list and then each change on its own. Blocks on the CLI.
-pub fn mine_on(forge: Forge, host: &str) -> Result<(Vec<Mine>, bool), crate::ForgeError> {
+pub fn mine_on(forge: Forge, host: &str) -> Result<(Vec<Mine>, bool, Option<crate::RateLimit>), crate::ForgeError> {
     match forge {
         Forge::GitHub => {
             let query = format!(
-                "query($q: String!) {{ search(query: $q, type: ISSUE, first: {PAGE}) {{ pageInfo {{ hasNextPage }} nodes {{ ...PrFields }} }} }} {PR_FIELDS}"
+                "query($q: String!) {{ search(query: $q, type: ISSUE, first: {PAGE}) {{ pageInfo {{ hasNextPage }} nodes {{ ...PrFields }} }} rateLimit {{ cost remaining resetAt }} }} {PR_FIELDS}"
             );
-            parse_github_list(&graphql(host, &query, &[("-f", "q=is:pr is:open author:@me sort:updated-desc".to_string())])?, host)
+            let bytes = graphql(host, &query, &[("-f", "q=is:pr is:open author:@me sort:updated-desc".to_string())])?;
+            let (found, more) = parse_github_list(&bytes, host)?;
+            Ok((found, more, crate::rate_limit(&bytes)))
         }
-        Forge::GitLab => gitlab_list(host),
+        Forge::GitLab => gitlab_list(host).map(|(found, more)| (found, more, None)),
     }
 }
 

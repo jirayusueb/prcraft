@@ -111,6 +111,9 @@ fn read_source(forge: Forge) -> Result<BackState, String> {
     let list = list.map_err(|e| e.message)?;
     let (mut items, mut failed, mut partial) = (Vec::new(), Vec::new(), Vec::new());
     for reviewed in list.items {
+        if let Some(rate) = reviewed.rate {
+            crate::quota::record(reviewed.change.host.as_deref().unwrap_or(forge.default_host()), rate);
+        }
         match reviewed.snapshot {
             Ok(Some(snapshot)) => {
                 if let Some(why) = &snapshot.incomplete {
@@ -160,6 +163,7 @@ pub fn since_last(change: &ChangeRef) -> Result<SinceLast, CommandError> {
     let me = forge::my_login(change.forge, change.host_name()).map_err(CommandError::Forge)?;
     let snapshot = forge::snapshot(change, &me)
         .map_err(CommandError::Forge)?
+        .0
         .ok_or_else(|| CommandError::Invalid(format!("You have not reviewed {}, so there is no review to compare with.", change.reference())))?;
     let Assessment { review, commits_since, .. } = assess(&snapshot);
     let from = review.commit.clone().ok_or_else(|| {

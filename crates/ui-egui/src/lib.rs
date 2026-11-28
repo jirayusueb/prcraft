@@ -42,6 +42,7 @@ use craft::ui::shell::embed::CloseDecision;
 use pr_craft_core::palette::{Facts, Screen, Target};
 use pr_craft_core::turn::Turn;
 use pr_craft_core::{Change, Forge};
+use pr_craft_engine::quota::HostQuota;
 use pr_craft_engine::turn::{self, BackItem, BackSource, BackState, EventKind};
 use pr_craft_engine::{InboxSource, SourceState};
 use pr_craft_forge::Login;
@@ -306,6 +307,9 @@ impl PrCraftApp {
     /// Starts the interval from the moment the last sync or poll answered, not from when it began: a slow `gh` never makes the
     /// next poll follow at once.
     fn settle_poll(&mut self) {
+        if !self.syncing() && !self.refreshing() {
+            pr_craft_engine::quota::end_poll();
+        }
         if self.polling && !self.syncing() && !self.refreshing() {
             self.polling = false;
             self.last_check = Instant::now();
@@ -710,7 +714,9 @@ impl PrCraftApp {
     /// battery and the reader asked for that. The lists stay as they are until each source answers.
     fn poll_due(&mut self, ctx: &Context) {
         let on_battery = self.battery.on_battery(ctx) == Some(true);
-        let every = Duration::from_secs(60 * u64::from(prefs::get(ctx).settings.poll_every(on_battery)));
+        let chosen = prefs::get(ctx).settings.poll_every(on_battery);
+        let hosts = pr_craft_engine::quota::status(chosen, Utc::now());
+        let every = Duration::from_secs(60 * u64::from(poll_minutes(chosen, &hosts)));
         let waited = self.last_check.elapsed();
         if waited < every {
             ctx.request_repaint_after(every - waited);
@@ -721,17 +727,18 @@ impl PrCraftApp {
         }
         self.polling = true;
         self.last_check = Instant::now();
-        for source in &mut self.sources {
+        let skip = |forge: Forge| forge == Forge::GitHub && github_paused(&hosts);
+        for source in self.sources.iter_mut().filter(|s| !skip(s.forge)) {
             if let Sync::Checking(rx) = start_sync(ctx, source.forge) {
                 source.refresh = Some(rx);
             }
         }
-        for back in &mut self.back {
+        for back in self.back.iter_mut().filter(|b| !skip(b.forge)) {
             if let BackFetch::Checking(rx) = start_back(ctx, back.forge) {
                 back.refresh = Some(rx);
             }
         }
-        for m in &mut self.mine {
+        for m in self.mine.iter_mut().filter(|m| !skip(m.forge)) {
             m.restart(ctx);
         }
     }
@@ -1724,6 +1731,16 @@ pub(crate) fn live_label(ui: &mut Ui, text: impl Into<String>, colour: egui::Col
     ui.ctx().accesskit_node_builder(label.id, |node| node.set_live(egui::accesskit::Live::Polite));
 }
 
+/// Minutes between polls: the chosen interval, stretched to the longest any GitHub host needs to stay within its hourly budget.
+fn poll_minutes(chosen: u32, hosts: &[HostQuota]) -> u32 {
+    hosts.iter().map(|h| h.effective_minutes).fold(chosen, u32::max)
+}
+
+/// Every GitHub host that has polled is out of points until its limit resets, so GitHub is not asked.
+fn github_paused(hosts: &[HostQuota]) -> bool {
+    !hosts.is_empty() && hosts.iter().all(|h| h.paused_until.is_some())
+}
+
 /// `5m`, `2h`, `3d`: how long since `then`, in its largest whole unit.
 fn age(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
     let since = now.signed_duration_since(then);
@@ -2102,6 +2119,30 @@ mod poll_tests {
         app.sources[0].refresh = None;
         app.settle_poll();
         assert!(!app.polling && app.last_check.elapsed() < Duration::from_secs(60), "the clock starts when the last answer came");
+    }
+
+    fn quota(host: &str, effective_minutes: u32, paused_until: Option<DateTime<Utc>>) -> HostQuota {
+        HostQuota {
+            host: host.into(),
+            last_cost: 57,
+            projected_per_hour: 1140,
+            remaining: Some(4000),
+            reset_at: paused_until,
+            effective_minutes,
+            paused_until,
+        }
+    }
+
+    #[test]
+    fn the_next_poll_uses_the_longest_effective_interval_and_a_paused_github_is_skipped() {
+        let hosts = [quota("github.com", 3, None), quota("ghe.acme.dev", 7, None)];
+        assert_eq!(poll_minutes(1, &hosts), 7);
+        assert_eq!(poll_minutes(15, &hosts), 15, "the chosen interval is never shortened");
+        assert_eq!(poll_minutes(5, &[]), 5);
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert!(!github_paused(&[]));
+        assert!(!github_paused(&[quota("github.com", 3, Some(later)), quota("ghe.acme.dev", 3, None)]), "one host still answers");
+        assert!(github_paused(&[quota("github.com", 3, Some(later))]));
     }
 
     #[test]

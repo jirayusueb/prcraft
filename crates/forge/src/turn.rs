@@ -19,6 +19,8 @@ pub struct Reviewed {
     pub change: Change,
     /// `Ok(None)`: the forge lists the change but holds no review of the user's on it.
     pub snapshot: Result<Option<Snapshot>, crate::ForgeError>,
+    /// What the snapshot's GraphQL call cost (GitHub only).
+    pub rate: Option<crate::RateLimit>,
 }
 
 /// What [`reviewed`] found.
@@ -80,14 +82,17 @@ pub fn reviewed(forge: Forge) -> Result<ReviewedList, crate::ForgeError> {
             let jobs: Vec<_> = batch.iter().map(|(change, me)| scope.spawn(move || snapshot(&change.change_ref(), me))).collect();
             jobs.into_iter().map(|job| job.join().unwrap_or_else(|_| Err("the lookup stopped".into()))).collect()
         });
-        found.extend(batch.iter().map(|(change, _)| change.clone()).zip(snapshots).map(|(change, snapshot)| Reviewed { change, snapshot }));
+        found.extend(batch.iter().map(|(change, _)| change.clone()).zip(snapshots).map(|(change, read)| match read {
+            Ok((snapshot, rate)) => Reviewed { change, snapshot: Ok(snapshot), rate },
+            Err(error) => Reviewed { change, snapshot: Err(error), rate: None },
+        }));
     }
     Ok(ReviewedList { items: found, truncated })
 }
 
 /// What happened on `change` around the user's latest review of it. `None` when the user has no review there.
-/// Blocks on the CLI.
-pub fn snapshot(change: &ChangeRef, me: &str) -> Result<Option<Snapshot>, crate::ForgeError> {
+/// Blocks on the CLI. The second part is what the GraphQL call cost.
+pub fn snapshot(change: &ChangeRef, me: &str) -> Result<(Option<Snapshot>, Option<crate::RateLimit>), crate::ForgeError> {
     match change.forge {
         Forge::GitHub => {
             let (owner, name) = change.repo.split_once('/').ok_or_else(|| format!("{} is not `owner/name`", change.repo))?;
@@ -102,9 +107,10 @@ pub fn snapshot(change: &ChangeRef, me: &str) -> Result<Option<Snapshot>, crate:
             for (flag, value) in &fields {
                 args.extend([*flag, value.as_str()]);
             }
-            github_snapshot(&run_on(change.host_name(), "gh", &args)?, me)
+            let bytes = run_on(change.host_name(), "gh", &args)?;
+            Ok((github_snapshot(&bytes, me)?, crate::rate_limit(&bytes)))
         }
-        Forge::GitLab => Ok(gitlab_snapshot(me, gitlab_read(change, me)?)),
+        Forge::GitLab => Ok((gitlab_snapshot(me, gitlab_read(change, me)?), None)),
     }
 }
 
@@ -143,6 +149,7 @@ pub const GITHUB_QUERY: &str = "query($owner: String!, $name: String!, $number: 
       }
     }
   }
+  rateLimit { cost remaining resetAt }
 }
 fragment ThreadComment on PullRequestReviewComment { id author { login } createdAt body pullRequestReview { id } }";
 
