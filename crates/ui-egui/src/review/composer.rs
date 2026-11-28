@@ -435,6 +435,7 @@ impl Ready {
             acts.push(Act::Submit);
         }
         self.post_unknown_note(ui, acts);
+        self.outdated_note(ui, acts);
         ui.add_space(theme::SPACE_2);
         if self.handoff.is_none() && Pill::new(PillKind::Secondary, "Hand off this review").key(ui, "review.hand_off").small().show(ui).clicked() {
             acts.push(Act::OpenHandOff);
@@ -476,10 +477,55 @@ impl Ready {
         }
     }
 
-    /// Moves to the next or previous draft in file order and focuses its card (`[` and `]`).
-    pub(super) fn step_draft(&mut self, forward: bool) {
+    /// "N drafts · M on changed lines", a live region, with the key that steps to them; once Submit was pressed, the extra confirm.
+    pub(super) fn outdated_line(&self, ui: &mut Ui) {
+        let drafts = self.view.local.drafts.len();
+        if drafts == 0 {
+            return;
+        }
+        let p = theme::pal(ui);
+        let mut line = format!("{drafts} {} · {} on changed lines", if drafts == 1 { "draft" } else { "drafts" }, self.outdated.len());
+        let color = if self.outdated.is_empty() { p.text_tertiary } else { p.text_secondary };
+        if !self.outdated.is_empty() {
+            line = keymap::hint(ui, &line, "review.next_outdated");
+        }
+        let said = components::note(ui, line, color);
+        ui.ctx().accesskit_node_builder(said.id, |node| node.set_live(egui::accesskit::Live::Polite));
+    }
+
+    pub(super) fn outdated_note(&self, ui: &mut Ui, acts: &mut Vec<Act>) {
+        if !self.confirm_outdated {
+            return;
+        }
+        let places: Vec<String> = self.view.local.drafts.iter().filter(|d| self.outdated.contains(&d.id)).map(Draft::location).collect();
+        let n = places.len();
+        let title = format!("{n} {} on lines that changed since you wrote them", if n == 1 { "draft is" } else { "drafts are" });
+        ui.add_space(theme::SPACE_2);
+        let note = components::banner(ui, BannerKind::Warn, &title, &places.join(", "));
+        ui.ctx().accesskit_node_builder(note.id, |node| node.set_live(egui::accesskit::Live::Polite));
+        ui.add_space(theme::SPACE_2);
+        ui.horizontal(|ui| {
+            if Pill::new(PillKind::Primary, "Post anyway").small().show(ui).clicked() {
+                acts.push(Act::ConfirmOutdated);
+            }
+            if Pill::new(PillKind::Secondary, "Cancel").small().show(ui).clicked() {
+                acts.push(Act::DismissOutdated);
+            }
+        });
+    }
+
+    /// Moves to the next or previous draft in file order and focuses its card (`[` and `]`); with `outdated`, only among the drafts
+    /// on changed lines.
+    pub(super) fn step_draft(&mut self, forward: bool, outdated: bool) {
         let rank = |path: &str| self.view.files.iter().position(|f| f.path == path).unwrap_or(usize::MAX);
-        let mut order: Vec<(usize, u32, u64)> = self.view.local.drafts.iter().map(|d| (rank(&d.path), d.end.shown(), d.id)).collect();
+        let mut order: Vec<(usize, u32, u64)> = self
+            .view
+            .local
+            .drafts
+            .iter()
+            .filter(|d| !outdated || self.outdated.contains(&d.id))
+            .map(|d| (rank(&d.path), d.end.shown(), d.id))
+            .collect();
         order.sort_unstable();
         let at = self.draft_focus.and_then(|id| order.iter().position(|o| o.2 == id));
         let next = match (at, forward) {
@@ -611,5 +657,47 @@ mod ai_tests {
         assert!(current.contains("not posted") && current.contains(&finding.finding.body), "{current}");
         assert_ne!(current, other, "the card the keys act on is marked in words, not only by colour");
         assert!(acts.is_empty(), "drawing a card keeps and discards nothing");
+    }
+}
+
+#[cfg(test)]
+mod outdated_tests {
+    use craft::egui::Context;
+    use pr_craft_core::review::Anchor;
+
+    use super::*;
+    use crate::ai::{Fetch, tests::drawn};
+
+    /// The retry fixture with its draft on line 35 and a second one on line 900, both written on an earlier commit.
+    fn moved() -> Ready {
+        let mut view = crate::parity::retry_view();
+        let mut gone = view.local.drafts[0].clone();
+        (gone.id, gone.end.new) = (2, Some(900));
+        view.local.drafts.push(gone);
+        view.local.anchor = Some(Anchor { head_sha: "old".into(), base_sha: None, start_sha: None });
+        Ready::with(view, false, Default::default(), None, Fetch::Idle)
+    }
+
+    #[test]
+    fn the_line_counts_drafts_and_those_on_changed_lines_and_the_key_steps_to_them() {
+        let mut ready = moved();
+        let text = drawn(&Context::default(), |ui| ready.outdated_line(ui));
+        assert!(text.contains("2 drafts · 1 on changed lines"), "{text}");
+        ready.step_draft(true, true);
+        assert_eq!(ready.draft_focus, Some(2), "focus goes to the draft on the changed line, not the one in place");
+        assert!(ready.focus_draft);
+        ready.view.local.drafts.clear();
+        ready.recheck_outdated();
+        assert!(drawn(&Context::default(), |ui| ready.outdated_line(ui)).is_empty(), "no drafts, no line");
+    }
+
+    #[test]
+    fn submit_asks_the_extra_confirm_and_lists_the_drafts() {
+        let mut ready = moved();
+        ready.confirm_outdated = true;
+        let mut acts = Vec::new();
+        let text = drawn(&Context::default(), |ui| ready.outdated_note(ui, &mut acts));
+        assert!(text.contains("1 draft is on lines that changed since you wrote them") && text.contains("Post anyway"), "{text}");
+        assert!(acts.is_empty());
     }
 }

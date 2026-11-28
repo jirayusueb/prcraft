@@ -489,7 +489,7 @@ const RETRY_DIFF: &str = "diff --git a/internal/webhooks/retry.go b/internal/web
 ";
 
 /// Figma frame 91: six files, the first drawn in split view with whitespace hidden and changed words marked.
-fn retry_view() -> ReviewView {
+pub(crate) fn retry_view() -> ReviewView {
     let change = ChangeRef { forge: Forge::GitHub, repo: "acme/api".into(), number: 482, host: None };
     let anchor = Anchor { head_sha: "abc".into(), base_sha: None, start_sha: None };
     let mut files = parse_unified(RETRY_DIFF);

@@ -484,6 +484,7 @@ impl Ready {
             let note = "These drafts were written on an earlier commit. They post against that commit, so the forge may show them as outdated. Edit or delete them in Your review.";
             components::padded(ui, Margin::symmetric(20, 6), |ui| components::banner(ui, BannerKind::Warn, "Drafts from an earlier commit", note));
         }
+        components::padded(ui, Margin::symmetric(20, 0), |ui| self.outdated_line(ui));
         self.threads_note(ui);
         if self.view.files.is_empty() {
             components::padded(ui, Margin::symmetric(20, 6), |ui| {

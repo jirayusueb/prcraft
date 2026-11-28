@@ -179,6 +179,7 @@ impl ReviewScreen {
             can_submit: self.submit_offered(),
             run_detail_open: r.run_detail.is_some(),
             drafts: !r.view.local.drafts.is_empty(),
+            outdated_drafts: !r.outdated.is_empty(),
             file_offers_views: r.current_file().is_some_and(|f| views::offered(f).len() > 1),
             diff_drawn: r.current_file().is_some_and(|f| r.expanded(f) && !r.drawn_rendered(f) && !f.hunks.is_empty()),
             file_offers_images: r.current_file().is_some_and(|f| {
@@ -512,6 +513,9 @@ enum Act {
     StepDraft {
         forward: bool,
     },
+    StepOutdated,
+    ConfirmOutdated,
+    DismissOutdated,
     ToggleViewed(usize),
     Unfold(String),
     OpenComposer,
@@ -634,6 +638,10 @@ struct Ready {
     submitting: Option<Receiver<Result<LocalReview, String>>>,
     /// Asking whether to post again, because the last post ran out of time and may have gone through.
     confirm_post: bool,
+    /// Submit was pressed with drafts on changed lines: asking whether to post them anyway.
+    confirm_outdated: bool,
+    /// The drafts written on an earlier commit whose lines the diff no longer has.
+    outdated: Vec<u64>,
     error: Option<String>,
     notice: Option<String>,
     /// The draft `[` and `]` last moved to.
@@ -747,6 +755,8 @@ impl Ready {
             body,
             submitting: None,
             confirm_post: false,
+            confirm_outdated: false,
+            outdated: Vec::new(),
             error: None,
             notice: None,
             draft_focus: None,
@@ -787,6 +797,7 @@ impl Ready {
             focus_submit: false,
         };
         ready.error = error;
+        ready.recheck_outdated();
         ready.refilter();
         ready
     }

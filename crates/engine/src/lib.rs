@@ -301,6 +301,9 @@ struct Submit {
     /// Say yes to posting again after a post that ran out of time (`post_unknown` in `review.local`): the reader checked the forge.
     #[serde(default)]
     confirm_unknown: bool,
+    /// Say yes to posting drafts whose lines changed since they were written.
+    #[serde(default)]
+    confirm_outdated: bool,
 }
 
 #[derive(Deserialize)]
@@ -386,7 +389,7 @@ fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
         }
         "review.submit" => {
             let p: Submit = params(value)?;
-            Ok(serde_json::to_value(review::submit(&p.change, p.confirm_unknown)?)?)
+            Ok(serde_json::to_value(review::submit(&p.change, p.confirm_unknown, p.confirm_outdated)?)?)
         }
         "review.markdown" => {
             let p: Markdown = params(value)?;

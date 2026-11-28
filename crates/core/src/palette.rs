@@ -195,6 +195,8 @@ pub struct ReviewFacts {
     pub run_detail_open: bool,
     /// The review holds at least one draft.
     pub drafts: bool,
+    /// At least one draft sits on a line that changed since it was written.
+    pub outdated_drafts: bool,
     /// The current file has more than one view (rendered or source, image modes).
     pub file_offers_views: bool,
     /// The current file is drawn as hunks, so there are hunk edges to read more lines around.
@@ -216,6 +218,7 @@ impl ReviewFacts {
             "review.submit" => self.can_submit,
             "review.close_run" => self.run_detail_open,
             "review.next_draft" | "review.prev_draft" | "review.edit_draft" => self.drafts && !self.readonly,
+            "review.next_outdated" => self.outdated_drafts && !self.readonly,
             "review.toggle_source" => self.file_offers_views && !self.readonly,
             "review.image_two_up" | "review.image_swipe" | "review.image_onion" | "review.image_difference" => {
                 self.file_offers_images && !self.readonly
