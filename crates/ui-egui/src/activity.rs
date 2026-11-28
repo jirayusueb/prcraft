@@ -352,7 +352,7 @@ impl Activity {
         ui.add_space(theme::SPACE_2);
         components::note(
             ui,
-            "macOS notifications are not available yet (M4). A stuck run shows here and in the title-bar pill.",
+            "macOS banners for stuck runs are not available yet. A stuck run shows here and in the title-bar pill.",
             theme::pal(ui).text_tertiary,
         );
         ui.add_space(theme::SPACE_2);
@@ -908,7 +908,7 @@ mod tests {
             let _ = view.ui(ui, &mut runs);
         });
         assert!(!screen.contains("run abc already ended"), "Activity does not draw it a second time:\n{screen}");
-        assert!(screen.contains("macOS notifications are not available"), "the missing banners are disclosed:\n{screen}");
+        assert!(screen.contains("banners for stuck runs are not available"), "the missing banners are disclosed:\n{screen}");
         let popped = drawn(&Context::default(), |ui| {
             let _ = popover(ui.ctx(), &mut runs);
         });

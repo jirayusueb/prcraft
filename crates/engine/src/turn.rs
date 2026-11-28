@@ -19,8 +19,7 @@ use crate::{CommandError, InboxSource, SourceState};
 pub use crate::store::Pause;
 
 /// What the results of `notify.*` say about banners, so no screen implies they exist.
-pub const SYSTEM_NOTICE: &str =
-    "System banners, the Dock badge, the menu-bar item and the 10:00 digest are not available yet. Notifications show in PR Craft only.";
+pub const SYSTEM_NOTICE: &str = "The Dock badge, the menu-bar item and the 10:00 digest are not available yet. Banners come from Script Editor and need its notifications allowed.";
 
 /// Serialises every load-change-save of the notification file in this process.
 static NOTIFY: Mutex<()> = Mutex::new(());
@@ -463,7 +462,7 @@ pub struct PauseStatus {
 }
 
 /// `notify.pause`: pauses notifications until `until`, or until resumed when `until` is `None`; `resume` ends a pause.
-/// Nothing shows banners yet, so a pause is only kept and shown.
+/// `notify.banners` posts nothing while a pause holds.
 pub fn pause(until: Option<DateTime<Utc>>, resume: bool) -> Result<PauseStatus, CommandError> {
     if until.is_some_and(|until| until <= Utc::now()) {
         return Err(CommandError::Invalid("`until` is already past.".into()));
@@ -497,7 +496,7 @@ pub fn seen(ids: Vec<String>) -> Result<usize, CommandError> {
     Ok(added)
 }
 
-fn lock() -> Result<std::sync::MutexGuard<'static, ()>, CommandError> {
+pub(crate) fn lock() -> Result<std::sync::MutexGuard<'static, ()>, CommandError> {
     NOTIFY.lock().map_err(|_| CommandError::write("the notification state was left half-written by a crash in this process"))
 }
 

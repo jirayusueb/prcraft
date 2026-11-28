@@ -68,6 +68,8 @@ pub struct PrCraftApp {
     back: Vec<BackSync>,
     /// The in-app notifications, built once every source has answered.
     notifications: Option<turn::Notifications>,
+    /// Why the last banner did not show, as "Banner not shown: <reason>".
+    banner_error: Option<String>,
     notify_error: Option<String>,
     /// Rebuild `notifications` as soon as no source is syncing.
     notify_dirty: bool,
@@ -154,6 +156,7 @@ impl PrCraftApp {
             forge_filter: None,
             back,
             notifications: None,
+            banner_error: None,
             notify_error: None,
             notify_dirty: false,
             runs: ai::Runs::default(),
@@ -202,6 +205,7 @@ impl PrCraftApp {
             forge_filter: None,
             back: Vec::new(),
             notifications: None,
+            banner_error: None,
             notify_error: None,
             notify_dirty: false,
             runs,
@@ -802,6 +806,7 @@ impl PrCraftApp {
             .collect();
         match turn::compose(&back, &requested) {
             Ok(notifications) => {
+                self.banner_error = turn_banners(&notifications);
                 self.notifications = Some(notifications);
                 self.notify_error = None;
             }
@@ -1066,7 +1071,7 @@ impl PrCraftApp {
         }
     }
 
-    /// Notifications (Figma frame 07), kept in this window: banners, the Dock badge and the menu-bar item need platform code that is not built.
+    /// Notifications (Figma frame 07), kept in this window: the Dock badge and the menu-bar item need platform code that is not built. Banners go through `notify.banners`.
     fn notifications_list(&mut self, ui: &mut Ui) {
         let p = theme::pal(ui);
         let pad = Margin { left: 20, right: 20, top: 14, bottom: 12 };
@@ -1097,6 +1102,9 @@ impl PrCraftApp {
                 });
             });
             if let Some(error) = &self.notify_error {
+                live_label(ui, error.as_str(), p.rose_text);
+            }
+            if let Some(error) = &self.banner_error {
                 live_label(ui, error.as_str(), p.rose_text);
             }
             let state = pause_line(notes.pause.as_ref());
@@ -1776,6 +1784,18 @@ fn age(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
     }
 }
 
+/// Posts the banners of `notes`; what to show when one did not.
+fn turn_banners(notes: &turn::Notifications) -> Option<String> {
+    // Tests never run osascript.
+    if cfg!(test) {
+        return None;
+    }
+    match pr_craft_engine::banner::banners(notes) {
+        Ok(done) => done.failed,
+        Err(error) => Some(format!("Banner not shown: {error}")),
+    }
+}
+
 /// Whether notifications are paused, and until when: the stored time in the user's zone, or "until you resume".
 fn pause_line(pause: Option<&turn::Pause>) -> String {
     match pause {
@@ -2058,6 +2078,7 @@ mod poll_tests {
             forge_filter: None,
             back,
             notifications: None,
+            banner_error: None,
             notify_error: None,
             notify_dirty: false,
             runs: ai::Runs::default(),

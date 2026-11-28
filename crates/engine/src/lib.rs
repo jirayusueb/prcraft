@@ -1,6 +1,7 @@
 //! Commands: the one way the UI, the CLI and automation read or change state (AGENTS.md rule 14).
 
 pub mod ai;
+pub mod banner;
 pub mod commits;
 pub mod diagnostics;
 pub mod keys;
@@ -52,6 +53,7 @@ const BASE: &[&str] = &[
     "notify.list",
     "notify.pause",
     "notify.seen",
+    "notify.banners",
     "review.blob",
     "review.set_view",
     "review.views",
@@ -415,6 +417,7 @@ fn dispatch(id: &str, value: &Value) -> Result<Value, CommandError> {
             let status = if p.toggle { turn::toggle_pause()? } else { turn::pause(p.until, p.resume)? };
             Ok(serde_json::to_value(status)?)
         }
+        "notify.banners" => Ok(serde_json::to_value(banner::command()?)?),
         "notify.seen" => Ok(serde_json::json!({ "marked": turn::seen(params::<Seen>(value)?.ids)? })),
         "review.blob" => {
             let p: BlobOf = params(value)?;

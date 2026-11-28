@@ -764,7 +764,7 @@ impl Pages {
 const GRANTS: [(&str, &str, &[&str], &str); 6] = [
     (
         "Notifications",
-        "Banners for your turn, failed pipelines and queued posts. Respects Focus. Not built yet: PR Craft sends none.",
+        "Banners come from Script Editor and have no buttons: macOS lets PR Craft post them only through AppleScript. Allow notifications for Script Editor in System Settings → Notifications.",
         &["x-apple.systempreferences:com.apple.Notifications-Settings.extension"],
         "Open Notifications settings",
     ),
@@ -809,6 +809,12 @@ impl Pages {
         for (name, why, target, button) in GRANTS {
             section(ui, name);
             note(ui, why);
+            if name == "Notifications" {
+                let on = prefs::get(ui.ctx()).settings.banners;
+                if let Some(on) = switch(ui, "Show macOS banners", "One banner for each new review request, change back to you or new commits.", on) {
+                    self.set(ui, json!({ "banners": on }));
+                }
+            }
             note(ui, "Status: not readable by PR Craft.");
             if ui.button(button).clicked() {
                 self.open_later(target, format!("Opened {name}. The status is not shown here; PR Craft cannot read it."));
@@ -836,6 +842,14 @@ mod tests {
         assert_eq!(u.line, Some(Ok("You have the latest version".to_string())));
         u.finish(Step::Check, Err("offline (E-UPDATE)".into()));
         assert_eq!(u.line, Some(Err("offline (E-UPDATE)".to_string())));
+    }
+
+    #[test]
+    fn permissions_says_where_banners_come_from_and_names_their_switch() {
+        let text = crate::ai::tests::drawn(&egui::Context::default(), |ui| Pages::new().permissions(ui));
+        assert!(text.contains("Banners come from Script Editor and have no buttons"), "{text}");
+        assert!(text.contains("Allow notifications for Script Editor in System Settings → Notifications."), "{text}");
+        assert!(text.contains("Show macOS banners"), "{text}");
     }
 
     #[test]
