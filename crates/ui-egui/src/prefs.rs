@@ -186,6 +186,16 @@ pub fn apply(ctx: &Context) -> Look {
 pub(crate) fn install_defaults(ctx: &Context) {
     let keys = pr_craft_core::keys::ACTIONS.iter().map(default_row).collect();
     install(ctx, Prefs { settings: Settings::default(), keys, error: None, stamps: [None, None] });
+    glyphs_for_tests(ctx);
+}
+
+/// The app ships for macOS, whose system fonts draw the key symbols (⌘ ⌥ ⇧); a Linux CI runner has none, so only there
+/// a missing glyph draws a box instead of failing the test. On macOS a missing glyph still panics.
+#[cfg(test)]
+pub(crate) fn glyphs_for_tests(ctx: &Context) {
+    if !cfg!(target_os = "macos") {
+        ctx.set_missing_glyph_policy(craft::egui::MissingGlyphPolicy::Tofu);
+    }
 }
 
 /// How long `pmset` answers are kept, so a page that shows the battery state does not run it every frame.
