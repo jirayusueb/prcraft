@@ -7,6 +7,7 @@ pub mod context;
 pub mod diff;
 pub mod diff_view;
 pub mod editor;
+pub mod extra;
 pub mod filter;
 pub mod gitref;
 pub mod keys;

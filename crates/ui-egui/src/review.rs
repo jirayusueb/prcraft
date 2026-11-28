@@ -755,7 +755,7 @@ impl Ready {
     ) -> Self {
         let filter_text = view.filter.join(" ");
         let body = view.local.body.clone();
-        let layout = view.layout;
+        let layout = view.layout.clone();
         let file = 0;
         let mut ready = Ready {
             view,
@@ -1549,7 +1549,7 @@ impl Ready {
             return;
         }
         let current_hunk = (i == self.file).then_some(self.hunk);
-        let (layout, split) = (self.layout, self.split_on());
+        let (layout, split) = (self.layout.clone(), self.split_on());
         let gaps = context::gaps(&file.hunks);
         let reveals = self.reveals.get(&i).map(Vec::as_slice).unwrap_or_default();
         let keys = ExpandKeys::of(ui);
@@ -1603,7 +1603,7 @@ impl Ready {
             if h == 0 {
                 gap_ui(ui, &draw, gaps.first().copied(), reveals.first(), acts);
             }
-            let rows = HunkRows { file: i, hunk: h, source: hunk, layout, split };
+            let rows = HunkRows { file: i, hunk: h, source: hunk, layout: layout.clone(), split };
             hunk_rows(ui, &rows, &visible, &mut under, acts);
         }
         gap_ui(ui, &draw, gaps.get(file.hunks.len()).copied(), reveals.get(file.hunks.len()), acts);
@@ -2709,12 +2709,12 @@ impl Ready {
 
     /// The keys that change the diff options or read more lines, with what each does now.
     fn layout_keys(&self) -> [(&'static str, Act); 8] {
-        let now = self.layout;
+        let now = self.layout.clone();
         [
-            ("review.layout", Act::SetLayout(LayoutOptions { split: !self.split_on(), ..now })),
-            ("review.hide_whitespace", Act::SetLayout(LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now })),
-            ("review.word_highlight", Act::SetLayout(LayoutOptions { word_highlight: !now.word_highlight, ..now })),
-            ("review.wrap", Act::SetLayout(LayoutOptions { wrap: !now.wrap, ..now })),
+            ("review.layout", Act::SetLayout(LayoutOptions { split: !self.split_on(), ..now.clone() })),
+            ("review.hide_whitespace", Act::SetLayout(LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now.clone() })),
+            ("review.word_highlight", Act::SetLayout(LayoutOptions { word_highlight: !now.word_highlight, ..now.clone() })),
+            ("review.wrap", Act::SetLayout(LayoutOptions { wrap: !now.wrap, ..now.clone() })),
             ("review.diff_options", Act::ToggleOptions),
             ("review.expand_above", Act::ExpandAround(Kind::Above)),
             ("review.expand_below", Act::ExpandAround(Kind::Below)),
@@ -2740,14 +2740,14 @@ impl Ready {
     /// The Unified/Split switch and the Diff options control, at the right of the diff header (frame 91).
     fn layout_controls(&mut self, ui: &mut Ui, header: Rect, acts: &mut Vec<Act>) {
         let rect = Rect::from_min_size(egui::pos2(header.right() - 20.0 - LAYOUT_CONTROLS, header.top() + 12.0), egui::vec2(LAYOUT_CONTROLS, 26.0));
-        let now = self.layout;
+        let now = self.layout.clone();
         let at = usize::from(self.split_on());
         let mut trigger = None;
         ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let both = ["Unified".to_string(), "Split".to_string()];
             if let Some(picked) = components::segmented(ui, "layout", "Diff layout", &both, at) {
-                acts.push(Act::SetLayout(LayoutOptions { split: picked == 1, ..now }));
+                acts.push(Act::SetLayout(LayoutOptions { split: picked == 1, ..now.clone() }));
             }
             let options = components::title_action(ui, "Diff options", &keymap::label(ui, "review.diff_options"));
             trigger = Some(options.rect);
@@ -3232,7 +3232,7 @@ impl Ready {
             return;
         }
         let p = theme::pal(ctx);
-        let now = self.layout;
+        let now = self.layout.clone();
         let whitespace = self.view.files.get(self.file).map_or(0, |f| f.hunks.iter().map(|h| diff_view::visible(h, true, None).hidden).sum::<u32>());
         let repo = self.view.change.repo.clone();
         let split_at = usize::from(self.split_on());
@@ -3250,7 +3250,7 @@ impl Ready {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let both = ["Unified".to_string(), "Split".to_string()];
                             if let Some(picked) = components::segmented(ui, "options-layout", "Diff layout", &both, split_at) {
-                                acts.push(Act::SetLayout(LayoutOptions { split: picked == 1, ..now }));
+                                acts.push(Act::SetLayout(LayoutOptions { split: picked == 1, ..now.clone() }));
                             }
                         });
                     });
@@ -3260,10 +3260,10 @@ impl Ready {
                             "Hide whitespace changes",
                             found.as_str(),
                             now.hide_whitespace,
-                            LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now },
+                            LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now.clone() },
                         ),
-                        ("Highlight changed words", "", now.word_highlight, LayoutOptions { word_highlight: !now.word_highlight, ..now }),
-                        ("Wrap long lines", "", now.wrap, LayoutOptions { wrap: !now.wrap, ..now }),
+                        ("Highlight changed words", "", now.word_highlight, LayoutOptions { word_highlight: !now.word_highlight, ..now.clone() }),
+                        ("Wrap long lines", "", now.wrap, LayoutOptions { wrap: !now.wrap, ..now.clone() }),
                     ];
                     for (title, note, on, next) in rows {
                         ui.add_space(theme::SPACE_2);
@@ -3690,7 +3690,7 @@ impl Ready {
             ctx.data_mut(|d| d.insert_temp(drag_key(), None::<(usize, usize)>));
         }
         if let Some(choice) = menu::take(ctx, "lines") {
-            let now = self.layout;
+            let now = self.layout.clone();
             let act = match choice.item {
                 "comment" => Some(Act::OpenComposer),
                 "copy_lines" => Some(Act::CopyLines),
@@ -3698,7 +3698,7 @@ impl Ready {
                 // Decided when the menu opened: the item that was drawn is the one that runs.
                 "vscode" => Some(Act::Local(LocalAct::Editor(Editor::VsCode))),
                 "locally" => Some(Act::Local(LocalAct::Toggle)),
-                "whitespace" => Some(Act::SetLayout(LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now })),
+                "whitespace" => Some(Act::SetLayout(LayoutOptions { hide_whitespace: !now.hide_whitespace, ..now.clone() })),
                 "viewed" => Some(Act::ToggleViewed(self.file)),
                 _ => None,
             };

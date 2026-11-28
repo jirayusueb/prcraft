@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::extra::Extra;
+
 /// A modifier key. Declared in the order macOS writes them: ⌃ ⌥ ⇧ ⌘.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -121,11 +123,12 @@ fn types_a_character(key: &str) -> bool {
 
 /// A key and the modifiers held with it. `modifiers` is kept sorted and without repeats, so equal bindings compare equal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Binding {
     pub key: String,
     #[serde(default)]
     pub modifiers: Vec<Modifier>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl Binding {
@@ -135,7 +138,7 @@ impl Binding {
         let mut modifiers = modifiers.to_vec();
         modifiers.sort();
         modifiers.dedup();
-        Some(Binding { key: (*name).to_string(), modifiers })
+        Some(Binding { key: (*name).to_string(), modifiers, extra: Extra::default() })
     }
 
     pub fn has(&self, modifier: Modifier) -> bool {
@@ -216,7 +219,7 @@ impl Action {
     pub fn default_binding(&self) -> Binding {
         let mut modifiers = self.modifiers.to_vec();
         modifiers.sort();
-        Binding { key: self.key.to_string(), modifiers }
+        Binding { key: self.key.to_string(), modifiers, extra: Extra::default() }
     }
 }
 

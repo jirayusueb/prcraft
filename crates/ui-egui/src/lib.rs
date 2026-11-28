@@ -1731,8 +1731,8 @@ fn age(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
 fn pause_line(pause: Option<&turn::Pause>) -> String {
     match pause {
         None => "Not paused.".to_string(),
-        Some(turn::Pause { until: None }) => "Paused until you resume. Events stay listed here.".to_string(),
-        Some(turn::Pause { until: Some(until) }) => {
+        Some(turn::Pause { until: None, .. }) => "Paused until you resume. Events stay listed here.".to_string(),
+        Some(turn::Pause { until: Some(until), .. }) => {
             format!("Paused until {}. Events stay listed here.", until.with_timezone(&chrono::Local).format("%a %-d %b %H:%M"))
         }
     }
@@ -1952,9 +1952,9 @@ mod pause_tests {
     #[test]
     fn the_pause_line_names_the_real_end_time_or_says_until_resumed() {
         assert_eq!(pause_line(None), "Not paused.");
-        assert!(pause_line(Some(&turn::Pause { until: None })).contains("until you resume"));
+        assert!(pause_line(Some(&turn::Pause { until: None, extra: Default::default() })).contains("until you resume"));
         let until = Utc::now() + chrono::Duration::days(1);
-        let line = pause_line(Some(&turn::Pause { until: Some(until) }));
+        let line = pause_line(Some(&turn::Pause { until: Some(until), extra: Default::default() }));
         assert!(!line.contains("you resume"), "{line}");
         assert!(line.contains(&until.with_timezone(&chrono::Local).format("%H:%M").to_string()), "{line}");
     }

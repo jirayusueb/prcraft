@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::extra::Extra;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
@@ -61,7 +63,7 @@ pub enum IfChanged {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Settings {
     pub theme: Theme,
     /// Family names of installed fonts. A name that is not installed keeps its place here and the UI says so.
@@ -87,6 +89,8 @@ pub struct Settings {
     pub checkouts_root: String,
     /// The local clone of each repository, by [`crate::checkout::clone_key`]. Only folders the user named are ever read.
     pub clones: BTreeMap<String, String>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl Default for Settings {
@@ -110,6 +114,7 @@ impl Default for Settings {
             if_changed_offline: IfChanged::Ask,
             checkouts_root: String::new(),
             clones: BTreeMap::new(),
+            extra: Extra::default(),
         }
     }
 }
@@ -159,6 +164,10 @@ impl Settings {
     pub fn patched(&self, patch: &Value) -> Result<Settings, String> {
         let Some(patch) = patch.as_object() else { return Err("settings.set takes an object of setting names and values".into()) };
         let Ok(Value::Object(mut merged)) = serde_json::to_value(self) else { return Err("the settings could not be encoded".into()) };
+        let known = serde_json::to_value(Settings::default()).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        if let Some(name) = patch.keys().find(|name| !known.contains_key(*name)) {
+            return Err(format!("`{name}` is not a setting"));
+        }
         merged.extend(patch.iter().map(|(k, v)| (k.clone(), v.clone())));
         let next: Settings = serde_json::from_value(Value::Object(Map::from_iter(merged))).map_err(|e| e.to_string())?;
         next.validate()?;
@@ -204,5 +213,19 @@ mod tests {
         assert_eq!(off.poll_every(true), 1);
         let slow = Settings { poll_minutes: 15, ..Settings::default() };
         assert_eq!(slow.poll_every(true), 15, "battery never makes it faster");
+    }
+
+    #[test]
+    fn a_setting_a_newer_build_wrote_is_kept_but_not_patchable() {
+        let file = json!({"theme": "dark", "from_the_future": {"a": 1}});
+        let loaded: Settings = serde_json::from_value(file.clone()).expect("unknown names load");
+        assert_eq!(loaded.theme, Theme::Dark);
+        assert_eq!(serde_json::to_value(&loaded).expect("saves")["from_the_future"], json!({"a": 1}));
+        let kept = loaded.patched(&json!({"poll_minutes": 9})).expect("known name");
+        assert_eq!(kept.poll_minutes, 9);
+        assert_eq!(kept.extra.0["from_the_future"], json!({"a": 1}));
+        assert!(loaded.patched(&json!({"from_the_future": 2})).is_err(), "an unknown name is still not settable");
+        let missing: Settings = serde_json::from_value(json!({})).expect("defaults");
+        assert_eq!(missing, Settings::default());
     }
 }

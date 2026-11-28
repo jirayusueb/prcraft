@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::extra::Extra;
 use crate::redact::ReadRules;
 use crate::{ChangeRef, Forge, filter};
 
@@ -82,6 +83,8 @@ pub struct EngineSettings {
     pub read: ReadRules,
     /// Per-repository read rules, by [`repo_key`]; they replace `read` whole for that repository.
     pub repo_read: BTreeMap<String, ReadRules>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl Default for EngineSettings {
@@ -93,6 +96,7 @@ impl Default for EngineSettings {
             spawn: SpawnLimits::default(),
             read: ReadRules::default(),
             repo_read: BTreeMap::new(),
+            extra: Extra::default(),
         }
     }
 }
@@ -166,6 +170,8 @@ pub struct Agent {
     pub spawn: SpawnLimits,
     #[serde(default)]
     pub runs_on: RunsOn,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 fn default_triggers() -> Vec<Trigger> {
@@ -303,6 +309,7 @@ mod tests {
             triggers: default_triggers(),
             spawn: SpawnLimits::default(),
             runs_on: RunsOn::All,
+            extra: Extra::default(),
         }
     }
 

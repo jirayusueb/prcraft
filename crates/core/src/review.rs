@@ -5,6 +5,7 @@ use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 
+use crate::extra::Extra;
 use crate::{ChangeRef, Forge};
 
 /// One diff line by its numbers on each side. A context line has both, an added line only `new`,
@@ -92,11 +93,18 @@ pub struct Anchor {
     pub start_sha: Option<String>,
 }
 
+/// A verdict a newer build wrote reads as Comment, which never approves or blocks, so the drafts beside it still load.
+fn lenient_verdict<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Verdict, D::Error> {
+    let word = String::deserialize(d)?;
+    Ok(serde_json::from_value(serde_json::Value::String(word)).unwrap_or_default())
+}
+
 /// Everything the reviewer wrote for one change, plus the files they marked viewed.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalReview {
     pub drafts: Vec<Draft>,
+    #[serde(deserialize_with = "lenient_verdict")]
     pub verdict: Verdict,
     /// The general comment that posts with the verdict.
     pub body: String,
@@ -108,6 +116,8 @@ pub struct LocalReview {
     /// Set when a post to the forge ran out of time: the forge may have taken it and its answer was lost. The drafts stay, and the
     /// next Submit asks first, because posting again could post twice. Says what happened, in words.
     pub post_unknown: Option<String>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl LocalReview {
@@ -166,5 +176,13 @@ mod tests {
         for needle in ["Request changes", "Two things.", "invoicer.go:42–44", "Lock first.", "0087.sql:3", "Add a note."] {
             assert!(text.contains(needle), "{needle} missing from:\n{text}");
         }
+    }
+
+    #[test]
+    fn a_verdict_from_a_newer_build_reads_as_comment_and_keeps_the_drafts() {
+        let file = r#"{"verdict": "something_new", "drafts": [{"id": 0, "path": "a.rs", "end": {"old": null, "new": 1}, "body": "why", "on_rendered": false}]}"#;
+        let review: LocalReview = serde_json::from_str(file).expect("loads");
+        assert_eq!(review.verdict, Verdict::Comment);
+        assert_eq!(review.drafts.len(), 1);
     }
 }

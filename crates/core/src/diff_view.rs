@@ -6,6 +6,7 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{DiffLine, Hunk, LineKind};
+use crate::extra::Extra;
 
 /// Split view needs a window at least this wide (px): two code columns and the side panes must all fit.
 pub const MIN_SPLIT_WINDOW: f32 = 1280.0;
@@ -16,7 +17,7 @@ pub fn split_allowed(width: f32) -> bool {
 }
 
 /// The diff options of `review.set_layout`, saved per repository.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutOptions {
     /// Two halves, old on the left and new on the right, instead of one column.
@@ -27,6 +28,8 @@ pub struct LayoutOptions {
     pub word_highlight: bool,
     /// Long lines wrap instead of scrolling sideways.
     pub wrap: bool,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 /// A line to draw, with its place in [`Hunk::lines`]: selections and comments name lines by that index.

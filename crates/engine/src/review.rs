@@ -79,7 +79,7 @@ pub fn open(change: &ChangeRef) -> Result<ReviewView, CommandError> {
 pub fn set_layout(forge: Forge, host: Option<&str>, repo: &str, options: LayoutOptions) -> Result<LayoutOptions, CommandError> {
     let dir = store::data_dir().map_err(CommandError::Store)?;
     let _guard = lock()?;
-    store::save_layout(&dir, forge, host, repo, options).map_err(CommandError::Store)?;
+    store::save_layout(&dir, forge, host, repo, options.clone()).map_err(CommandError::Store)?;
     Ok(options)
 }
 

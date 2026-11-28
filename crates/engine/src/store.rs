@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use pr_craft_core::agent::{Agent, EngineSettings};
 use pr_craft_core::diff_view::LayoutOptions;
+use pr_craft_core::extra::Extra;
 use pr_craft_core::keys::Binding;
 use pr_craft_core::review::LocalReview;
 use pr_craft_core::run::Run;
@@ -52,6 +53,7 @@ pub fn load_review(dir: &Path, change: &ChangeRef) -> Result<LocalReview, String
 }
 
 pub fn save_review(dir: &Path, change: &ChangeRef, review: &LocalReview) -> Result<(), String> {
+    stamp(dir)?;
     save(&review_path(dir, change), review)
 }
 
@@ -96,13 +98,17 @@ pub fn list_pending(dir: &Path) -> (Vec<Pending>, Vec<String>) {
             .collect()
     };
     let mut files = Vec::new();
+    let mut unknown = Vec::new();
     for folder in entries(&dir.join("reviews"), true) {
         let name = folder.file_name().to_string_lossy().to_string();
         let (kind, host) = name.split_once('@').map_or((name.as_str(), None), |(kind, host)| (kind, Some(host.to_string())));
         let forge = match kind {
             "github" => Forge::GitHub,
             "gitlab" => Forge::GitLab,
-            _ => continue,
+            _ => {
+                unknown.push(format!("{}: not a forge folder this build knows", folder.path().display()));
+                continue;
+            }
         };
         for repo in entries(&folder.path(), true) {
             let repo_name = repo.file_name().to_string_lossy().replace("%2F", "/");
@@ -111,6 +117,7 @@ pub fn list_pending(dir: &Path) -> (Vec<Pending>, Vec<String>) {
             }
         }
     }
+    unreadable.extend(unknown);
     for (forge, host, repo, path) in files {
         let number = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok());
         let (true, Some(number)) = (path.extension().is_some_and(|e| e == "json"), number) else { continue };
@@ -142,13 +149,14 @@ pub fn save_filter(dir: &Path, forge: Forge, host: Option<&str>, repo: &str, pat
     } else {
         all.insert(key, patterns);
     }
+    stamp(dir)?;
     save(&path, &all)
 }
 
 /// The diff options chosen for one repository; the defaults when none were saved.
 pub fn load_layout(dir: &Path, forge: Forge, host: Option<&str>, repo: &str) -> Result<LayoutOptions, String> {
     let all: BTreeMap<String, LayoutOptions> = load(&dir.join("layouts.json"))?;
-    Ok(all.get(&filter_key(forge, host, repo)).copied().unwrap_or_default())
+    Ok(all.get(&filter_key(forge, host, repo)).cloned().unwrap_or_default())
 }
 
 pub fn save_layout(dir: &Path, forge: Forge, host: Option<&str>, repo: &str, options: LayoutOptions) -> Result<(), String> {
@@ -160,30 +168,39 @@ pub fn save_layout(dir: &Path, forge: Forge, host: Option<&str>, repo: &str, opt
     } else {
         all.insert(key, options);
     }
+    stamp(dir)?;
     save(&path, &all)
 }
 
 /// The view chosen for each file extension, by lowercase extension without its dot.
 pub fn load_views(dir: &Path) -> Result<BTreeMap<String, FileView>, String> {
-    load(&dir.join("views.json"))
+    let all: BTreeMap<String, serde_json::Value> = load(&dir.join("views.json"))?;
+    Ok(all.into_iter().filter_map(|(ext, value)| Some((ext, serde_json::from_value(value).ok()?))).collect())
 }
 
+// shortcut: a view a newer build wrote is dropped on the next save by an older build; upgrade if views ever carry user data.
 pub fn save_views(dir: &Path, views: &BTreeMap<String, FileView>) -> Result<(), String> {
+    stamp(dir)?;
     save(&dir.join("views.json"), views)
 }
 
 /// Which notifications the user has seen, and whether they are paused.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NotifyState {
     // shortcut: ids are kept for good, about 100 bytes per event; prune them when the file outgrows a few hundred KB.
     pub seen: BTreeSet<String>,
     pub pause: Option<Pause>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 /// `until: None` pauses until the user resumes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pause {
     pub until: Option<DateTime<Utc>>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 pub fn load_notify(dir: &Path) -> Result<NotifyState, String> {
@@ -191,6 +208,7 @@ pub fn load_notify(dir: &Path) -> Result<NotifyState, String> {
 }
 
 pub fn save_notify(dir: &Path, state: &NotifyState) -> Result<(), String> {
+    stamp(dir)?;
     save(&dir.join("notifications.json"), state)
 }
 
@@ -226,12 +244,31 @@ fn save<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     written.map_err(fail)
 }
 
+/// The data version this build writes. A later build that changes a file's meaning, not just adds to it, bumps it.
+const DATA_VERSION: u32 = 1;
+
+/// The version a build wrote into `dir`, or `None` when no build has saved there yet or the file is not a number.
+pub fn data_version(dir: &Path) -> Option<u32> {
+    fs::read_to_string(dir.join("data-version")).ok()?.trim().parse().ok()
+}
+
+/// Writes `data-version` on the first save into `dir`; a version another build wrote stays as it is.
+fn stamp(dir: &Path) -> Result<(), String> {
+    if data_version(dir).is_some() {
+        return Ok(());
+    }
+    let fail = |e: io::Error| format!("could not save {}: {e}", dir.join("data-version").display());
+    fs::create_dir_all(dir).map_err(fail)?;
+    fs::write(dir.join("data-version"), format!("{DATA_VERSION}\n")).map_err(fail)
+}
+
 /// Appearance, accessibility and sync choices (Settings → Appearance and the pages after it).
 pub fn load_settings(dir: &Path) -> Result<AppSettings, String> {
     load(&dir.join("settings.json"))
 }
 
 pub fn save_settings(dir: &Path, settings: &AppSettings) -> Result<(), String> {
+    stamp(dir)?;
     save(&dir.join("settings.json"), settings)
 }
 
@@ -241,6 +278,7 @@ pub fn load_keys(dir: &Path) -> Result<BTreeMap<String, Binding>, String> {
 }
 
 pub fn save_keys(dir: &Path, keys: &BTreeMap<String, Binding>) -> Result<(), String> {
+    stamp(dir)?;
     save(&dir.join("keys.json"), keys)
 }
 
@@ -250,6 +288,7 @@ pub fn load_ai(dir: &Path) -> Result<EngineSettings, String> {
 }
 
 pub fn save_ai(dir: &Path, settings: &EngineSettings) -> Result<(), String> {
+    stamp(dir)?;
     save(&dir.join("ai").join("settings.json"), settings)
 }
 
@@ -258,6 +297,7 @@ pub fn load_agents(dir: &Path) -> Result<Vec<Agent>, String> {
 }
 
 pub fn save_agents(dir: &Path, agents: &[Agent]) -> Result<(), String> {
+    stamp(dir)?;
     save(&dir.join("ai").join("agents.json"), &agents)
 }
 
@@ -277,6 +317,7 @@ pub fn load_run(dir: &Path, id: &str) -> Result<Option<Run>, String> {
 
 /// Writes a new run's first file. Later changes go through [`with_run`], which merges.
 pub fn create_run(dir: &Path, run: &Run) -> Result<(), String> {
+    stamp(dir)?;
     with_lock(dir, &run.id, || save(&run_file(dir, &run.id, "json")?, run))
 }
 
@@ -405,8 +446,8 @@ mod tests {
         state.seen.insert("x".into());
         save_notify(&dir, &state).expect("save again");
         assert_eq!(load_notify(&dir).expect("load").seen, state.seen);
-        let files = fs::read_dir(&dir).expect("dir").filter_map(Result::ok).count();
-        assert_eq!(files, 1, "no temp file is left behind");
+        let temp = fs::read_dir(&dir).expect("dir").filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(temp, 0, "no temp file is left behind");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -496,7 +537,7 @@ mod tests {
         let dir = temp_dir("layouts");
         let split = LayoutOptions { split: true, wrap: true, ..LayoutOptions::default() };
         assert_eq!(load_layout(&dir, Forge::GitHub, None, "acme/api").expect("load"), LayoutOptions::default(), "nothing saved yet");
-        save_layout(&dir, Forge::GitHub, None, "acme/api", split).expect("save");
+        save_layout(&dir, Forge::GitHub, None, "acme/api", split.clone()).expect("save");
         assert_eq!(load_layout(&dir, Forge::GitHub, None, "acme/api").expect("load"), split);
         assert_eq!(load_layout(&dir, Forge::GitHub, None, "acme/web").expect("load"), LayoutOptions::default(), "another repository is untouched");
         save_layout(&dir, Forge::GitHub, None, "acme/api", LayoutOptions::default()).expect("reset");
@@ -528,6 +569,64 @@ mod tests {
         views.insert("png".to_string(), FileView::ImageSwipe);
         save_views(&dir, &views).expect("save");
         assert_eq!(load_views(&dir).expect("load"), views);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notify_state_and_pause_keep_unknown_keys() {
+        let dir = temp_dir("notify-extra");
+        fs::create_dir_all(&dir).expect("dir");
+        fs::write(dir.join("notifications.json"), r#"{"pause": {"until": null, "why": "x"}, "from_the_future": 1}"#).expect("write");
+        let state = load_notify(&dir).expect("loads");
+        save_notify(&dir, &state).expect("saves");
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("notifications.json")).expect("read")).expect("json");
+        assert_eq!(saved["from_the_future"], 1);
+        assert_eq!(saved["pause"]["why"], "x");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_view_this_build_does_not_know_is_dropped_and_the_known_ones_stay() {
+        let dir = temp_dir("views-lenient");
+        fs::create_dir_all(&dir).expect("dir");
+        let known = serde_json::to_value(FileView::Source).expect("encodes");
+        fs::write(dir.join("views.json"), serde_json::json!({"md": known, "xyz": "hologram"}).to_string()).expect("write");
+        let views = load_views(&dir).expect("loads");
+        assert_eq!(views.keys().collect::<Vec<_>>(), ["md"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_drafts_and_an_unknown_post_survive_a_fresh_read() {
+        let dir = temp_dir("restart");
+        let change = ChangeRef { forge: Forge::GitHub, repo: "acme/api".into(), number: 3, host: None };
+        let draft = |id| Draft {
+            id,
+            path: "a.rs".into(),
+            old_path: None,
+            start: None,
+            end: LineRef { old: None, new: Some(1) },
+            body: format!("d{id}"),
+            on_rendered: false,
+        };
+        let review = LocalReview { drafts: vec![draft(0), draft(1)], post_unknown: Some("timed out".into()), ..LocalReview::default() };
+        save_review(&dir, &change, &review).expect("save");
+        let again = load_review(&dir, &change).expect("load");
+        assert_eq!(again.drafts, review.drafts);
+        assert_eq!(again.post_unknown.as_deref(), Some("timed out"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_data_version_is_written_on_the_first_save_and_an_unknown_forge_folder_is_reported() {
+        let dir = temp_dir("data-version");
+        assert_eq!(data_version(&dir), None);
+        save_notify(&dir, &NotifyState::default()).expect("save");
+        assert_eq!(data_version(&dir), Some(1));
+        fs::create_dir_all(dir.join("reviews").join("bitbucket")).expect("dir");
+        let (found, unreadable) = list_pending(&dir);
+        assert!(found.is_empty());
+        assert!(unreadable.iter().any(|line| line.contains("bitbucket")), "{unreadable:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 }
