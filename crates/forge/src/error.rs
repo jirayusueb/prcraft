@@ -35,6 +35,14 @@ impl ForgeError {
         ForgeError { kind: self.kind, message: format!("{prefix}: {}", self.message) }
     }
 
+    /// Seconds a rate-limited server asked to wait, from a `Retry-After: <seconds>` line in the CLI's output.
+    pub fn retry_after(&self) -> Option<u64> {
+        let text = self.message.to_lowercase();
+        let rest = &text[text.find("retry-after:")? + "retry-after:".len()..];
+        let digits: String = rest.trim_start().chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
     /// A CLI that did not start (`NotFound`) or ran out of time (`TimedOut`) said so through `error`.
     pub(crate) fn spawn(error: &io::Error, message: String) -> Self {
         let kind = match error.kind() {
@@ -145,5 +153,13 @@ mod tests {
         assert_eq!(error.kind, FailKind::RateLimit);
         assert_eq!(error.to_string(), "github.com: slow down");
         assert_eq!(ForgeError::from("plain").kind, FailKind::Other);
+    }
+
+    #[test]
+    fn retry_after_is_read_from_the_output_or_absent() {
+        let limited = |text: &str| ForgeError::new(FailKind::RateLimit, format!("`glab api x` failed: {text}"));
+        assert_eq!(limited("429 Too Many Requests\nRetry-After: 120\n").retry_after(), Some(120));
+        assert_eq!(limited("429 too many requests retry-after:7").retry_after(), Some(7));
+        assert_eq!(limited("429 Too Many Requests").retry_after(), None);
     }
 }

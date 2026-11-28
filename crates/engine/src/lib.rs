@@ -561,8 +561,15 @@ pub fn inbox_source(forge: Forge) -> InboxSource {
                 SourceState::Paused { login: pr_craft_forge::signed_out(forge) }
             } else {
                 let answers: Vec<_> = std::thread::scope(|scope| {
-                    let jobs: Vec<_> =
-                        signed.iter().map(|h| (h.name.clone(), scope.spawn(move || pr_craft_forge::review_requested_on(forge, &h.name)))).collect();
+                    let jobs: Vec<_> = signed
+                        .iter()
+                        .map(|h| {
+                            (
+                                h.name.clone(),
+                                scope.spawn(move || quota::guarded(forge, &h.name, || pr_craft_forge::review_requested_on(forge, &h.name))),
+                            )
+                        })
+                        .collect();
                     jobs.into_iter().map(|(host, job)| (host, job.join().unwrap_or_else(|_| Err("the read stopped".into())))).collect()
                 });
                 listed(forge, answers, signed_out)

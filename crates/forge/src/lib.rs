@@ -190,8 +190,7 @@ pub fn review_requested_on(forge: Forge, host: &str) -> Result<(Vec<Change>, boo
         }
         Forge::GitLab => {
             let me: GitLabUser = from_json(&run_on(host, "glab", &["api", "user"])?)?;
-            let base = format!("merge_requests?state=opened&scope=all&order_by=updated_at&reviewer_username={}&", me.username);
-            let (mrs, cut) = turn::pages::<GitLabMr>(host, &base)?;
+            let (mrs, cut) = turn::reviewer_list(host, &me.username)?;
             Ok((mrs.into_iter().map(|mr| gitlab_change(mr, host)).collect(), cut))
         }
     }
@@ -351,7 +350,7 @@ fn parse_github(bytes: &[u8], host: &str) -> Result<Vec<Change>, ForgeError> {
         .collect())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct GitLabMr {
     iid: u64,
     title: String,
@@ -366,12 +365,12 @@ pub(crate) struct GitLabMr {
     references: GitLabReferences,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct GitLabUser {
     username: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct GitLabReferences {
     /// `group/subgroup/project!88`.
     full: String,

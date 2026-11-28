@@ -25,7 +25,7 @@ pub mod turn;
 pub mod view;
 
 /// The time types the shared structs use, so the engine and forge layers name them without a second dependency.
-pub use chrono::{DateTime, Local, Utc};
+pub use chrono::{DateTime, Local, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A code forge PR Craft reads changes from.

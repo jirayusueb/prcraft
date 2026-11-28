@@ -1,10 +1,10 @@
 //! Whose turn a reviewed change is. Pure rules over a [`Snapshot`] the forge layer reads.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{DateTime, Utc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewState {
     Approved,
@@ -24,7 +24,7 @@ impl ReviewState {
 }
 
 /// The user's latest review of a change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MyReview {
     pub state: ReviewState,
     /// `None` only for a GitLab approval whose note is gone. Everything "after the review" then counts nothing.
@@ -33,13 +33,13 @@ pub struct MyReview {
     pub commit: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commit {
     pub sha: String,
     pub at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub author: String,
     pub at: DateTime<Utc>,
@@ -47,7 +47,7 @@ pub struct Note {
 }
 
 /// A review thread, oldest note first.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thread {
     pub resolved: bool,
     /// Who resolved it, when the forge says.
@@ -60,7 +60,7 @@ pub struct Thread {
 }
 
 /// What a forge says about one change, in forge-neutral words.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub me: String,
     pub author: String,
