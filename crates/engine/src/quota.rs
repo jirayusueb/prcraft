@@ -1,11 +1,11 @@
 //! GitHub GraphQL quota safety: a member's polling spends at most [`HOURLY_BUDGET`] points an hour and never runs the bucket dry
 //! (`quota.status`). Each poll's GraphQL calls report their `rateLimit` here; the UI stretches its interval and pauses a host from it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
-use pr_craft_core::{DateTime, Utc};
-use pr_craft_forge::RateLimit;
+use pr_craft_core::{DateTime, Forge, Local, TimeDelta, Utc};
+use pr_craft_forge::{FailKind, ForgeError, RateLimit};
 use serde::Serialize;
 
 /// The points an hour one member's polling may spend (a quarter of GitHub's 5,000, shared with every other tool).
@@ -27,6 +27,41 @@ static BUDGETS: Mutex<Option<HashMap<String, Budget>>> = Mutex::new(None);
 
 fn with<T>(act: impl FnOnce(&mut HashMap<String, Budget>) -> T) -> T {
     act(BUDGETS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+}
+
+/// How long a rate-limited GitLab host is left alone when the server names no `Retry-After`.
+const DEFAULT_RETRY_SECS: i64 = 60;
+const MOST_RETRY_SECS: i64 = 3600;
+
+static PAUSES: Mutex<BTreeMap<String, DateTime<Utc>>> = Mutex::new(BTreeMap::new());
+
+/// Notes that `host` answered `error`. A GitLab host that rate-limited is paused until its `Retry-After` (seconds), else 60 s.
+pub fn note_failure(forge: Forge, host: &str, error: &ForgeError, now: DateTime<Utc>) {
+    if forge == Forge::GitLab && error.kind == FailKind::RateLimit {
+        // A server names the wait; an hour is the most this build holds a host for.
+        let wait = error.retry_after().map_or(DEFAULT_RETRY_SECS, |secs| i64::try_from(secs).unwrap_or(i64::MAX)).min(MOST_RETRY_SECS);
+        let until = now + TimeDelta::seconds(wait);
+        PAUSES.lock().unwrap_or_else(PoisonError::into_inner).insert(host.to_string(), until);
+    }
+}
+
+/// When `host`'s rate-limit pause ends, while it still holds at `now`.
+pub fn paused_until(host: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    PAUSES.lock().unwrap_or_else(PoisonError::into_inner).get(host).copied().filter(|until| now < *until)
+}
+
+/// The error a read of a paused host reports instead of asking it.
+pub fn paused_error(host: &str, until: DateTime<Utc>) -> ForgeError {
+    let at = until.with_timezone(&Local).format("%H:%M");
+    ForgeError::new(FailKind::RateLimit, format!("{host} is paused until {at} after a rate limit"))
+}
+
+/// Runs one host's `read` unless the host is paused, and pauses it when the read ends in a rate limit.
+pub fn guarded<T>(forge: Forge, host: &str, read: impl FnOnce() -> Result<T, ForgeError>) -> Result<T, ForgeError> {
+    if let Some(until) = paused_until(host, Utc::now()) {
+        return Err(paused_error(host, until));
+    }
+    read().inspect_err(|error| note_failure(forge, host, error, Utc::now()))
 }
 
 /// Adds one GraphQL call of the poll in progress on `host`.
@@ -138,5 +173,22 @@ mod tests {
         }
         let ours = status(1, at(9)).into_iter().find(|h| h.host == "quota-test.example").expect("recorded");
         assert_eq!((ours.last_cost, ours.effective_minutes, ours.remaining), (3, 1, Some(4000)), "50 fell out of the last three");
+    }
+
+    #[test]
+    fn a_gitlab_429_pauses_its_host_until_retry_after_and_not_after() {
+        let limited = |text: &str| ForgeError::new(FailKind::RateLimit, text);
+        let now = at(9);
+        note_failure(Forge::GitLab, "pause-a.example", &limited("glab: 429 Too Many Requests\nRetry-After: 90"), now);
+        note_failure(Forge::GitLab, "pause-b.example", &limited("glab: 429 Too Many Requests"), now);
+        note_failure(Forge::GitHub, "pause-c.example", &limited("gh: 429 Too Many Requests"), now);
+        note_failure(Forge::GitLab, "pause-d.example", &ForgeError::new(FailKind::Network, "no such host"), now);
+        let (ninety, sixty) = (now + TimeDelta::seconds(90), now + TimeDelta::seconds(60));
+        assert_eq!(paused_until("pause-a.example", now), Some(ninety));
+        assert_eq!(paused_until("pause-a.example", ninety - TimeDelta::seconds(1)), Some(ninety));
+        assert_eq!(paused_until("pause-a.example", ninety), None, "paused until Retry-After, not after");
+        assert_eq!(paused_until("pause-b.example", now), Some(sixty), "no Retry-After: 60 s");
+        assert_eq!(paused_until("pause-c.example", now), None, "GitHub has its own guard");
+        assert_eq!(paused_until("pause-d.example", now), None, "only a rate limit pauses");
     }
 }

@@ -13,6 +13,7 @@ use pr_craft_core::keys::Binding;
 use pr_craft_core::review::LocalReview;
 use pr_craft_core::run::Run;
 use pr_craft_core::settings::Settings as AppSettings;
+use pr_craft_core::turn::Snapshot;
 use pr_craft_core::view::FileView;
 use pr_craft_core::{ChangeRef, DateTime, Forge, Utc};
 use serde::de::DeserializeOwned;
@@ -210,6 +211,61 @@ pub fn load_notify(dir: &Path) -> Result<NotifyState, String> {
 pub fn save_notify(dir: &Path, state: &NotifyState) -> Result<(), String> {
     stamp(dir)?;
     save(&dir.join("notifications.json"), state)
+}
+
+/// What Back to you last read of each change the user reviewed, so a poll reads again only the changes that moved. Keyed by
+/// forge, host, repository and number.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotFile {
+    pub entries: BTreeMap<String, SnapshotEntry>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+/// One change's last read: when the forge said it was last updated, the login it was read as, and the snapshot (`None`:
+/// the forge holds no review of the user's on it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotEntry {
+    pub updated_at: DateTime<Utc>,
+    pub me: String,
+    pub snapshot: Option<Snapshot>,
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+/// `gh|github.com|acme/api|12`; every key of one host starts with [`host_prefix`].
+pub fn snapshot_key(change: &ChangeRef) -> String {
+    format!("{}{}|{}", host_prefix(change.forge, change.host_name()), change.repo, change.number)
+}
+
+fn host_prefix(forge: Forge, host: &str) -> String {
+    format!("{}|{host}|", forge.cli())
+}
+
+impl SnapshotFile {
+    /// The stored read of `change` as `me`, when the forge still reports the update it was read at.
+    pub fn unmoved(&self, change: &pr_craft_core::Change, me: &str) -> Option<&SnapshotEntry> {
+        self.entries.get(&snapshot_key(&change.change_ref())).filter(|e| e.updated_at == change.updated_at && e.me == me)
+    }
+
+    /// Keeps `fresh` as the whole of `forge`'s entries, except those of the `skipped` hosts, which were not read and so
+    /// are not known to be gone. Whatever is no longer listed is dropped.
+    pub fn replace(&mut self, forge: Forge, skipped: &[String], fresh: Vec<(String, SnapshotEntry)>) {
+        let kept =
+            |key: &str| !key.starts_with(&format!("{}|", forge.cli())) || skipped.iter().any(|host| key.starts_with(&host_prefix(forge, host)));
+        self.entries.retain(|key, _| kept(key));
+        self.entries.extend(fresh);
+    }
+}
+
+pub fn load_snapshots(dir: &Path) -> Result<SnapshotFile, String> {
+    load(&dir.join("snapshots.json"))
+}
+
+pub fn save_snapshots(dir: &Path, file: &SnapshotFile) -> Result<(), String> {
+    stamp(dir)?;
+    save(&dir.join("snapshots.json"), file)
 }
 
 fn load<T: DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
@@ -628,5 +684,39 @@ mod tests {
         assert!(found.is_empty());
         assert!(unreadable.iter().any(|line| line.contains("bitbucket")), "{unreadable:?}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn entry(day: u32, snapshot: Option<Snapshot>) -> SnapshotEntry {
+        let updated_at = DateTime::parse_from_rfc3339(&format!("2026-11-{day:02}T09:00:00Z")).expect("a time").with_timezone(&Utc);
+        SnapshotEntry { updated_at, me: "ana".into(), snapshot, extra: Extra::default() }
+    }
+
+    #[test]
+    fn snapshots_keep_unknown_keys_and_a_no_review_entry_through_a_save() {
+        let dir = temp_dir("snapshots-extra");
+        fs::create_dir_all(&dir).expect("dir");
+        let text = r#"{"entries":{"gh|github.com|acme/api|1":{"updated_at":"2026-11-02T09:00:00Z","me":"ana","snapshot":null,"newer":[1]}},"later":{"a":true}}"#;
+        fs::write(dir.join("snapshots.json"), text).expect("write");
+        let file = load_snapshots(&dir).expect("load");
+        save_snapshots(&dir, &file).expect("save");
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("snapshots.json")).expect("read")).expect("json");
+        assert_eq!(saved, serde_json::from_str::<serde_json::Value>(text).expect("json"), "both unknown keys came back");
+        assert!(data_version(&dir).is_some(), "the data version is stamped on save");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listed_host_keeps_only_what_it_still_lists_and_a_skipped_host_keeps_all() {
+        let key = |forge, host: &str, number| snapshot_key(&ChangeRef { forge, repo: "acme/api".into(), number, host: Some(host.into()) });
+        let mut file = SnapshotFile::default();
+        for (forge, host, number) in
+            [(Forge::GitLab, "a.example", 1), (Forge::GitLab, "a.example", 2), (Forge::GitLab, "b.example", 3), (Forge::GitHub, "github.com", 4)]
+        {
+            file.entries.insert(key(forge, host, number), entry(2, None));
+        }
+        file.replace(Forge::GitLab, &["b.example".to_string()], vec![(key(Forge::GitLab, "a.example", 1), entry(3, None))]);
+        let kept: Vec<_> = file.entries.keys().cloned().collect();
+        assert_eq!(kept, [key(Forge::GitHub, "github.com", 4), key(Forge::GitLab, "a.example", 1), key(Forge::GitLab, "b.example", 3)]);
+        assert_eq!(file.entries[&key(Forge::GitLab, "a.example", 1)], entry(3, None), "a moved change takes the new read");
     }
 }

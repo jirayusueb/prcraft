@@ -1,7 +1,10 @@
 //! Reads what "back to you" needs: the changes the user reviewed and what happened on them since, and the
 //! requests that hand a review to someone else. Everything here reads, except [`hand_off`].
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use pr_craft_core::turn::{Commit, MyReview, Note, ReviewState, Snapshot, Thread, mentions};
 use pr_craft_core::{Change, ChangeRef, DateTime, Forge, Utc};
@@ -23,12 +26,22 @@ pub struct Reviewed {
     pub rate: Option<crate::RateLimit>,
 }
 
-/// What [`reviewed`] found.
+/// A change the user may have reviewed, and the login the CLI acts as on its host.
 #[derive(Debug, Clone)]
-pub struct ReviewedList {
-    pub items: Vec<Reviewed>,
+pub struct Candidate {
+    pub change: Change,
+    pub me: String,
+}
+
+/// What [`candidates`] found.
+#[derive(Debug, Clone)]
+pub struct Candidates {
+    /// Newest update first.
+    pub items: Vec<Candidate>,
     /// The forge returned a full page ([`PAGE`]), so older reviews may be missing.
     pub truncated: bool,
+    /// Hosts the caller asked not to read: their changes are absent from `items` without being gone.
+    pub skipped: Vec<String>,
 }
 
 /// One person as either forge names them.
@@ -48,46 +61,90 @@ pub fn my_login(forge: Forge, host: &str) -> Result<String, crate::ForgeError> {
 /// so this stays small; a host that fills them is reported as truncated.
 const REVIEWED_PAGES: usize = 3;
 
-/// Open changes the user reviewed that someone else wrote, newest update first, at most [`REVIEWED_PAGES`] pages of
-/// [`PAGE`] per host, each with its [`Snapshot`]. Every host the CLI is signed in to is read, as the login it has
-/// there. A change whose lookup failed carries its error, so the caller never counts it as quiet. Blocks on the CLI;
-/// call it off the UI thread.
-pub fn reviewed(forge: Forge) -> Result<ReviewedList, crate::ForgeError> {
-    let mut truncated = false;
-    let mut candidates: Vec<(Change, String)> = Vec::new();
-    for host in signed_in_hosts(forge)? {
-        let me = my_login(forge, &host).map_err(|e| e.context(&host))?;
-        let (found, cut) = match forge {
-            Forge::GitHub => {
-                let (fields, limit) = ("number,title,repository,author,url,updatedAt,isDraft", format!("--limit={}", PAGE * REVIEWED_PAGES));
-                let args = ["search", "prs", "--reviewed-by=@me", "--state=open", "--sort=updated", &limit, "--json", fields];
-                let found = run_on(&host, "gh", &args).and_then(|bytes| parse_github(&bytes, &host)).map_err(|e| e.context(&host))?;
-                let cut = found.len() >= PAGE * REVIEWED_PAGES;
-                (found, cut)
-            }
-            Forge::GitLab => {
-                let base = format!("merge_requests?state=opened&scope=all&order_by=updated_at&reviewer_username={me}&");
-                let (mrs, cut) = pages_up_to::<crate::GitLabMr>(&host, &base, REVIEWED_PAGES).map_err(|e| e.context(&host))?;
-                (mrs.into_iter().map(|mr| crate::gitlab_change(mr, &host)).collect(), cut)
-            }
-        };
-        truncated |= cut;
-        candidates.extend(found.into_iter().map(|change| (change, me.clone())));
+/// How long one host's GitLab list is reused, so the inbox and Back to you of one poll read it once.
+const SHARED_FOR: Duration = Duration::from_secs(10);
+
+type SharedList = Result<(Vec<crate::GitLabMr>, bool), crate::ForgeError>;
+type Slot = Arc<Mutex<Option<(Instant, SharedList)>>>;
+
+static LISTS: Mutex<BTreeMap<String, Slot>> = Mutex::new(BTreeMap::new());
+
+/// `fetch`'s answer, or the one a caller already got from `slot` within `ttl`. A second caller waits for the first.
+fn shared<T: Clone>(slot: &Mutex<Option<(Instant, T)>>, ttl: Duration, fetch: impl FnOnce() -> T) -> T {
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, answer)) = held.as_ref().filter(|(at, _)| at.elapsed() < ttl) {
+        return answer.clone();
     }
-    candidates.sort_by_key(|(change, _)| std::cmp::Reverse(change.updated_at));
-    candidates.retain(|(change, me)| !change.author.eq_ignore_ascii_case(me));
+    let answer = fetch();
+    *held = Some((Instant::now(), answer.clone()));
+    answer
+}
+
+/// Open merge requests on `host` where `me` is a reviewer: the one list the inbox and Back to you both read, because their
+/// filters are the same.
+pub(crate) fn reviewer_list(host: &str, me: &str) -> SharedList {
+    let base = format!("merge_requests?state=opened&scope=all&order_by=updated_at&reviewer_username={me}&");
+    let slot = LISTS.lock().unwrap_or_else(PoisonError::into_inner).entry(format!("{host}\n{base}")).or_default().clone();
+    shared(&slot, SHARED_FOR, || pages::<crate::GitLabMr>(host, &base))
+}
+
+/// Open changes the user reviewed that someone else wrote, newest update first, at most [`REVIEWED_PAGES`] pages of
+/// [`PAGE`] per host. Every host the CLI is signed in to is read, as the login it has there, except those `skip` names.
+/// `limited` hears of a host that answered with a rate limit, before the error is returned. Blocks on the CLI; call it off
+/// the UI thread.
+pub fn candidates(forge: Forge, skip: &dyn Fn(&str) -> bool, limited: &dyn Fn(&str, &crate::ForgeError)) -> Result<Candidates, crate::ForgeError> {
+    let (mut truncated, mut skipped) = (false, Vec::new());
+    let mut items: Vec<Candidate> = Vec::new();
+    for host in signed_in_hosts(forge)? {
+        if skip(&host) {
+            skipped.push(host);
+            continue;
+        }
+        let read = || -> Result<(Vec<Change>, String, bool), crate::ForgeError> {
+            let me = my_login(forge, &host)?;
+            Ok(match forge {
+                Forge::GitHub => {
+                    let (fields, limit) = ("number,title,repository,author,url,updatedAt,isDraft", format!("--limit={}", PAGE * REVIEWED_PAGES));
+                    let args = ["search", "prs", "--reviewed-by=@me", "--state=open", "--sort=updated", &limit, "--json", fields];
+                    let found = run_on(&host, "gh", &args).and_then(|bytes| parse_github(&bytes, &host))?;
+                    let cut = found.len() >= PAGE * REVIEWED_PAGES;
+                    (found, me, cut)
+                }
+                Forge::GitLab => {
+                    let (mrs, cut) = reviewer_list(&host, &me)?;
+                    let cut = cut || mrs.len() >= PAGE * REVIEWED_PAGES;
+                    let found = mrs.into_iter().take(PAGE * REVIEWED_PAGES).map(|mr| crate::gitlab_change(mr, &host)).collect();
+                    (found, me, cut)
+                }
+            })
+        };
+        let (found, me, cut) = read().map_err(|e| {
+            limited(&host, &e);
+            e.context(&host)
+        })?;
+        truncated |= cut;
+        items.extend(found.into_iter().map(|change| Candidate { change, me: me.clone() }));
+    }
+    items.sort_by_key(|c| std::cmp::Reverse(c.change.updated_at));
+    items.retain(|c| !c.change.author.eq_ignore_ascii_case(&c.me));
+    Ok(Candidates { items, truncated, skipped })
+}
+
+/// The [`Snapshot`] of each of `items`, eight lookups at a time, in the same order. A lookup that failed carries its
+/// error, so the caller never counts it as quiet. Blocks on the CLI.
+pub fn read(items: &[Candidate]) -> Vec<Reviewed> {
     let mut found = Vec::new();
-    for batch in candidates.chunks(8) {
+    for batch in items.chunks(8) {
         let snapshots: Vec<_> = thread::scope(|scope| {
-            let jobs: Vec<_> = batch.iter().map(|(change, me)| scope.spawn(move || snapshot(&change.change_ref(), me))).collect();
+            let jobs: Vec<_> = batch.iter().map(|c| scope.spawn(move || snapshot(&c.change.change_ref(), &c.me))).collect();
             jobs.into_iter().map(|job| job.join().unwrap_or_else(|_| Err("the lookup stopped".into()))).collect()
         });
-        found.extend(batch.iter().map(|(change, _)| change.clone()).zip(snapshots).map(|(change, read)| match read {
+        found.extend(batch.iter().map(|c| c.change.clone()).zip(snapshots).map(|(change, read)| match read {
             Ok((snapshot, rate)) => Reviewed { change, snapshot: Ok(snapshot), rate },
             Err(error) => Reviewed { change, snapshot: Err(error), rate: None },
         }));
     }
-    Ok(ReviewedList { items: found, truncated })
+    found
 }
 
 /// What happened on `change` around the user's latest review of it. `None` when the user has no review there.
@@ -710,6 +767,19 @@ pub fn hand_off(change: &ChangeRef, from_me: &str, to: &str) -> Result<(), crate
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_shared_list_is_fetched_once_within_its_window_and_again_after() {
+        let (slot, fetched) = (Mutex::new(None), AtomicUsize::new(0));
+        let fetch = || {
+            fetched.fetch_add(1, Ordering::SeqCst);
+            fetched.load(Ordering::SeqCst)
+        };
+        assert_eq!((shared(&slot, Duration::from_secs(60), fetch), shared(&slot, Duration::from_secs(60), fetch)), (1, 1));
+        assert_eq!(shared(&slot, Duration::ZERO, fetch), 2, "an expired answer is read again");
+    }
+
     use super::*;
 
     const ME: &str = "mo";

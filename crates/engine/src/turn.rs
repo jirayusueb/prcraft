@@ -2,16 +2,18 @@
 //! review to someone else, and the in-app notifications built from all of it.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Mutex;
 
 use pr_craft_core::diff::{self, FileDiff};
 use pr_craft_core::mine::Mine;
 use pr_craft_core::turn::{Assessment, MyReview, Turn, assess, rewritten};
 use pr_craft_core::{Change, ChangeRef, DateTime, Forge, Utc};
+use pr_craft_forge::turn::{Candidate, Reviewed};
 use pr_craft_forge::{Login, turn as forge};
 use serde::Serialize;
 
-use crate::store::{self, NotifyState};
+use crate::store::{self, NotifyState, SnapshotEntry, SnapshotFile};
 use crate::{CommandError, InboxSource, SourceState};
 
 pub use crate::store::Pause;
@@ -22,6 +24,9 @@ pub const SYSTEM_NOTICE: &str =
 
 /// Serialises every load-change-save of the notification file in this process.
 static NOTIFY: Mutex<()> = Mutex::new(());
+
+/// Serialises every load-change-save of `snapshots.json` in this process.
+static SNAPSHOTS: Mutex<()> = Mutex::new(());
 
 /// A change the user reviewed, and whose turn it is.
 #[derive(Debug, Clone, Serialize)]
@@ -103,14 +108,102 @@ pub fn back_source(forge: Forge) -> BackSource {
     BackSource { forge, cli: forge.cli(), state }
 }
 
+/// What one forge's Back to you read found, before it is assessed.
+struct Read {
+    reviewed: Vec<Reviewed>,
+    truncated: bool,
+    /// Why the list may be short or slow to update, for the reader.
+    notes: Vec<String>,
+}
+
+/// Lists the candidates, reads only those that moved since `snapshots.json` last saw them, and saves what was read.
+fn read_back(forge: Forge) -> Result<Read, pr_craft_forge::ForgeError> {
+    let paused = |host: &str| crate::quota::paused_until(host, Utc::now()).is_some();
+    let limited = |host: &str, error: &pr_craft_forge::ForgeError| crate::quota::note_failure(forge, host, error, Utc::now());
+    let listed = forge::candidates(forge, &paused, &limited)?;
+    let mut notes: Vec<String> = listed
+        .skipped
+        .iter()
+        .filter_map(|host| crate::quota::paused_until(host, Utc::now()).map(|until| crate::quota::paused_error(host, until).message))
+        .map(|why| format!("{why}, so its changes are missing here."))
+        .collect();
+    // A baseline that cannot be read costs a full read and is left as it is; it never fails Back to you.
+    let baseline = store::data_dir().and_then(|dir| store::load_snapshots(&dir).map(|file| (dir, file)));
+    let (dir, stored) = match baseline {
+        Ok((dir, file)) => (Some(dir), file),
+        Err(error) => {
+            notes.push(format!("Read every change again, since the saved reads could not be used: {error}"));
+            (None, SnapshotFile::default())
+        }
+    };
+    let reviewed = resolve(&listed.items, &stored, forge::read);
+    if let Some(dir) = dir
+        && let Err(error) = remember(&dir, forge, &listed, &reviewed)
+    {
+        notes.push(format!("Could not save what was read, so the next poll reads everything again: {error}"));
+    }
+    Ok(Read { reviewed, truncated: listed.truncated, notes })
+}
+
+/// One [`Reviewed`] per candidate, in order. A candidate the forge still reports at the update `stored` saw is not read
+/// again; `read` gets only the others.
+fn resolve(items: &[Candidate], stored: &SnapshotFile, read: impl FnOnce(&[Candidate]) -> Vec<Reviewed>) -> Vec<Reviewed> {
+    let mut slots: Vec<Option<Reviewed>> = items
+        .iter()
+        .map(|c| stored.unmoved(&c.change, &c.me).map(|e| Reviewed { change: c.change.clone(), snapshot: Ok(e.snapshot.clone()), rate: None }))
+        .collect();
+    let moved: Vec<Candidate> = items.iter().zip(&slots).filter(|(_, slot)| slot.is_none()).map(|(c, _)| c.clone()).collect();
+    let mut fresh = read(&moved).into_iter();
+    slots.iter_mut().filter_map(|slot| slot.take().or_else(|| fresh.next())).collect()
+}
+
+/// Saves the reads of `forge` as its whole baseline. A read that failed or came back partial is not saved, so the next poll
+/// asks again. The file is loaded afresh under the lock, since the other forge saves into it too.
+fn remember(dir: &Path, forge: Forge, listed: &forge::Candidates, reviewed: &[Reviewed]) -> Result<(), String> {
+    let fresh = listed
+        .items
+        .iter()
+        .zip(reviewed)
+        .filter_map(|(c, r)| match &r.snapshot {
+            Ok(snapshot) if snapshot.as_ref().is_none_or(|s| s.incomplete.is_none()) => {
+                let entry =
+                    SnapshotEntry { updated_at: r.change.updated_at, me: c.me.clone(), snapshot: snapshot.clone(), extra: Default::default() };
+                Some((store::snapshot_key(&r.change.change_ref()), entry))
+            }
+            _ => None,
+        })
+        .collect();
+    let _held = SNAPSHOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut file = store::load_snapshots(dir)?;
+    file.replace(forge, &listed.skipped, fresh);
+    store::save_snapshots(dir, &file)
+}
+
 fn read_source(forge: Forge) -> Result<BackState, String> {
     let (list, (yours, yours_note)) = std::thread::scope(|scope| {
         let mine = scope.spawn(move || crate::mine::waiting_on_you(forge));
-        (forge::reviewed(forge), mine.join().unwrap_or_else(|_| (Vec::new(), Some("The read of your own changes stopped.".to_string()))))
+        (read_back(forge), mine.join().unwrap_or_else(|_| (Vec::new(), Some("The read of your own changes stopped.".to_string()))))
     });
     let list = list.map_err(|e| e.message)?;
+    let (mut items, failed, partial) = assess_all(forge, list.reviewed);
+    items.sort_by_key(|item| std::cmp::Reverse(item.change.updated_at));
+    let mut notes = Vec::new();
+    if !failed.is_empty() {
+        notes.push(format!("Could not read {}, so they are missing here.", failed.join("; ")));
+    }
+    if !partial.is_empty() {
+        notes.push(format!("Read only part of {}, so whose turn it is may be wrong.", partial.join("; ")));
+    }
+    notes.extend(list.notes);
+    notes.extend(yours_note);
+    let incomplete = (!notes.is_empty()).then(|| notes.join(" "));
+    Ok(BackState::Listed { items, truncated: list.truncated, incomplete, yours })
+}
+
+/// The rows of what was read, the changes whose lookup failed, and those read only in part.
+fn assess_all(forge: Forge, reviewed: Vec<Reviewed>) -> (Vec<BackItem>, Vec<String>, Vec<String>) {
     let (mut items, mut failed, mut partial) = (Vec::new(), Vec::new(), Vec::new());
-    for reviewed in list.items {
+    for reviewed in reviewed {
         if let Some(rate) = reviewed.rate {
             crate::quota::record(reviewed.change.host.as_deref().unwrap_or(forge.default_host()), rate);
         }
@@ -125,17 +218,7 @@ fn read_source(forge: Forge) -> Result<BackState, String> {
             Err(error) => failed.push(format!("{} ({error})", reviewed.change.reference())),
         }
     }
-    items.sort_by_key(|item| std::cmp::Reverse(item.change.updated_at));
-    let mut notes = Vec::new();
-    if !failed.is_empty() {
-        notes.push(format!("Could not read {}, so they are missing here.", failed.join("; ")));
-    }
-    if !partial.is_empty() {
-        notes.push(format!("Read only part of {}, so whose turn it is may be wrong.", partial.join("; ")));
-    }
-    notes.extend(yours_note);
-    let incomplete = (!notes.is_empty()).then(|| notes.join(" "));
-    Ok(BackState::Listed { items, truncated: list.truncated, incomplete, yours })
+    (items, failed, partial)
 }
 
 /// `review.since_last`: what changed after the user's last review of a change.
@@ -551,5 +634,88 @@ mod tests {
         assert!(active_pause(Some(Pause { until: Some(at(21)), extra: Default::default() }), now).is_some());
         assert!(active_pause(Some(Pause { until: Some(at(19)), extra: Default::default() }), now).is_none());
         assert!(active_pause(None, now).is_none());
+    }
+
+    fn candidate(number: u64, updated: u32) -> Candidate {
+        Candidate { change: change(number, updated), me: "ana".into() }
+    }
+
+    /// What a forge would say of `c`: reviewed on the 10th, one commit at the change's update, so back to you after the 10th.
+    fn snapshot_of(c: &Candidate) -> pr_craft_core::turn::Snapshot {
+        let commit = |sha: &str, at| pr_craft_core::turn::Commit { sha: sha.into(), at };
+        pr_craft_core::turn::Snapshot {
+            me: c.me.clone(),
+            author: "nina".into(),
+            review: MyReview { state: ReviewState::Commented, submitted_at: Some(at(10)), commit: Some("a1".into()) },
+            head: format!("n{}", c.change.number),
+            commits: vec![commit("a1", at(9)), commit(&format!("n{}", c.change.number), c.change.updated_at)],
+            threads: Vec::new(),
+            notes: Vec::new(),
+            re_requested: false,
+            re_requested_at: None,
+            approval_dismissed: false,
+            review_id: None,
+            commits_complete: true,
+            incomplete: None,
+        }
+    }
+
+    fn full_read(items: &[Candidate]) -> Vec<Reviewed> {
+        items.iter().map(|c| Reviewed { change: c.change.clone(), snapshot: Ok(Some(snapshot_of(c))), rate: None }).collect()
+    }
+
+    fn listed(items: Vec<Candidate>) -> forge::Candidates {
+        forge::Candidates { items, truncated: false, skipped: Vec::new() }
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("pr-craft-turn-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn rows(reviewed: Vec<Reviewed>) -> serde_json::Value {
+        let (items, failed, partial) = assess_all(Forge::GitHub, reviewed);
+        assert!((failed.is_empty(), partial.is_empty()) == (true, true));
+        serde_json::to_value(items).expect("rows")
+    }
+
+    #[test]
+    fn a_persisted_baseline_reads_only_what_moved_and_the_rows_equal_a_full_read() {
+        let dir = temp_dir("baseline");
+        let first = vec![candidate(1, 12), candidate(2, 11), candidate(3, 5)];
+        let reviewed = resolve(&first, &SnapshotFile::default(), full_read);
+        remember(&dir, Forge::GitHub, &listed(first), &reviewed).expect("saved");
+
+        // The next poll, as a new process: #2 moved, #1 and #3 did not.
+        let second = vec![candidate(1, 12), candidate(2, 14), candidate(3, 5)];
+        let stored = store::load_snapshots(&dir).expect("loaded");
+        let read = std::cell::RefCell::new(Vec::new());
+        let resolved = resolve(&second, &stored, |moved| {
+            read.borrow_mut().extend(moved.iter().map(|c| c.change.number));
+            full_read(moved)
+        });
+        assert_eq!(*read.borrow(), [2], "only the moved change was read");
+        let (resolved, full) = (rows(resolved), rows(full_read(&second)));
+        assert_eq!(resolved, full, "the same assessment and rows as a full read");
+        let items = resolved.as_array().expect("rows");
+        assert_eq!(
+            items.iter().filter(|i| i["turn"] == "back_to_you").count(),
+            3,
+            "unmoved changes stay in Back to you with their reasons: {items:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_that_is_no_longer_listed_is_dropped_from_the_saved_file() {
+        let dir = temp_dir("dropped");
+        let items = vec![candidate(1, 12), candidate(2, 11)];
+        remember(&dir, Forge::GitHub, &listed(items.clone()), &full_read(&items)).expect("saved");
+        let kept = vec![items[0].clone()];
+        remember(&dir, Forge::GitHub, &listed(kept.clone()), &full_read(&kept)).expect("saved");
+        let keys: Vec<_> = store::load_snapshots(&dir).expect("loaded").entries.into_keys().collect();
+        assert_eq!(keys, ["gh|github.com|acme/api|1"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

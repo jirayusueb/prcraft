@@ -132,7 +132,10 @@ fn read_source(forge: Forge) -> MineSource {
                 MineState::Paused { login: pr_craft_forge::signed_out(forge) }
             } else {
                 let answers: Vec<_> = std::thread::scope(|scope| {
-                    let jobs: Vec<_> = signed.iter().map(|h| (h.name.clone(), scope.spawn(move || read::mine_on(forge, &h.name)))).collect();
+                    let jobs: Vec<_> = signed
+                        .iter()
+                        .map(|h| (h.name.clone(), scope.spawn(move || crate::quota::guarded(forge, &h.name, || read::mine_on(forge, &h.name)))))
+                        .collect();
                     jobs.into_iter().map(|(host, job)| (host, job.join().unwrap_or_else(|_| Err("the read stopped".into())))).collect()
                 });
                 joined(answers, signed_out)
