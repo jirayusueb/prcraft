@@ -5073,6 +5073,7 @@ dependencies = [
 name = "pr-craft-engine"
 version = "0.1.0"
 dependencies = [
+ "craft",
  "pr-craft-core",
  "pr-craft-forge",
  "serde",

@@ -11,6 +11,7 @@ description = "Commands: the one way the UI, the CLI and automation act"
 workspace = true
 
 [dependencies]
+craft = { workspace = true, features = ["update"] }
 pr-craft-core = { workspace = true }
 pr-craft-forge = { workspace = true }
 serde = { workspace = true }
