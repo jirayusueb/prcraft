@@ -272,6 +272,7 @@ pub const ACTIONS: &[Action] = &[
     act("review.prev_file", Scope::Review, "Previous file", "P", &[]),
     act("review.next_draft", Scope::Review, "Next draft", "CloseBracket", &[]),
     act("review.prev_draft", Scope::Review, "Previous draft", "OpenBracket", &[]),
+    act("review.next_outdated", Scope::Review, "Next draft on a changed line", "D", &[Shift]),
     act("review.edit_draft", Scope::Review, "Edit the draft", "E", &[]),
     act("review.comment", Scope::Review, "Comment on the selected lines", "C", &[]),
     act("review.viewed", Scope::Review, "Mark the file viewed", "V", &[]),

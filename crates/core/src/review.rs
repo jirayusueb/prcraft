@@ -93,6 +93,21 @@ pub struct Anchor {
     pub start_sha: Option<String>,
 }
 
+impl Anchor {
+    /// The ids of the drafts written on another commit than `self` whose lines the diff `files` of `self` no longer has. A draft on an
+    /// unchanged head is never outdated. shortcut: a line that kept its numbers but changed its text still counts as in place, because
+    /// a draft keeps no text of its line; upgrade when it does.
+    pub fn outdated_drafts(&self, local: &LocalReview, files: &[crate::diff::FileDiff]) -> Vec<u64> {
+        if local.anchor.as_ref().is_none_or(|written| written == self) {
+            return Vec::new();
+        }
+        let drawn =
+            |path: &str, line: LineRef| files.iter().filter(|f| f.path == path).flat_map(|f| &f.hunks).flat_map(|h| &h.lines).any(|l| line.on(l));
+        let in_place = |d: &Draft| drawn(&d.path, d.end) && d.start.is_none_or(|start| drawn(&d.path, start));
+        local.drafts.iter().filter(|d| !in_place(d)).map(|d| d.id).collect()
+    }
+}
+
 /// A verdict a newer build wrote reads as Comment, which never approves or blocks, so the drafts beside it still load.
 fn lenient_verdict<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Verdict, D::Error> {
     let word = String::deserialize(d)?;
@@ -142,6 +157,28 @@ impl LocalReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(sha: &str) -> Anchor {
+        Anchor { head_sha: sha.into(), base_sha: None, start_sha: None }
+    }
+
+    #[test]
+    fn a_draft_is_outdated_only_on_a_moved_head_and_a_line_the_diff_no_longer_has() {
+        let files = crate::diff::parse_unified("diff --git a/f.go b/f.go\n--- a/f.go\n+++ b/f.go\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n");
+        let draft = |id, line| Draft {
+            id,
+            path: "f.go".into(),
+            old_path: None,
+            start: None,
+            end: LineRef { old: None, new: Some(line) },
+            body: String::new(),
+            on_rendered: false,
+        };
+        let local = |head| LocalReview { drafts: vec![draft(1, 2), draft(2, 9)], anchor: Some(at(head)), ..LocalReview::default() };
+        assert!(at("b").outdated_drafts(&local("b"), &files).is_empty(), "same head: nothing moved");
+        assert_eq!(at("b").outdated_drafts(&local("a"), &files), [2], "new head: line 2 is still drawn, line 9 is gone");
+        assert!(at("b").outdated_drafts(&LocalReview::default(), &files).is_empty(), "no drafts");
+    }
 
     #[test]
     fn markdown_keeps_every_draft_and_the_verdict() {

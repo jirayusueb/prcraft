@@ -109,6 +109,7 @@ impl Ready {
             acts.push(Act::CopyLines);
         }
         for (id, act) in [
+            ("review.next_outdated", Act::StepOutdated),
             ("review.next_draft", Act::StepDraft { forward: true }),
             ("review.prev_draft", Act::StepDraft { forward: false }),
             ("review.comment", Act::OpenComposer),
@@ -214,6 +215,14 @@ impl Ready {
             self.body.clone_from(&local.body);
         }
         self.view.local = local;
+        self.recheck_outdated();
+    }
+
+    pub(super) fn recheck_outdated(&mut self) {
+        self.outdated = self.view.anchor.outdated_drafts(&self.view.local, &self.view.files);
+        if self.outdated.is_empty() {
+            self.confirm_outdated = false;
+        }
     }
 
     pub(super) fn apply(&mut self, ctx: &Context, acts: Vec<Act>, runs: &mut Runs) -> Outcome {
@@ -296,7 +305,19 @@ impl Ready {
                 }
                 Act::OpenLayer(change, title) => return Outcome::Open(change, title),
                 Act::StepDraft { forward } => {
-                    self.step_draft(forward);
+                    self.step_draft(forward, false);
+                    Ok(())
+                }
+                Act::StepOutdated => {
+                    self.step_draft(true, true);
+                    Ok(())
+                }
+                Act::ConfirmOutdated => {
+                    self.confirm_outdated = false;
+                    self.submit_with(ctx, true, true)
+                }
+                Act::DismissOutdated => {
+                    self.confirm_outdated = false;
                     Ok(())
                 }
                 Act::Select { file, hunk, line, extend } => {
@@ -465,7 +486,7 @@ impl Ready {
                 },
                 Act::ConfirmPost => {
                     self.confirm_post = false;
-                    self.submit_with(ctx, true)
+                    self.submit_with(ctx, true, false)
                 }
                 Act::DismissPost => {
                     self.confirm_post = false;
@@ -529,12 +550,12 @@ impl Ready {
     }
 
     pub(super) fn submit(&mut self, ctx: &Context) -> Result<(), pr_craft_engine::CommandError> {
-        self.submit_with(ctx, false)
+        self.submit_with(ctx, false, false)
     }
 
     /// Posts the review. After a post that ran out of time, it first asks (`confirmed` is the reader's yes), because that post may
-    /// already have gone through and posting again could post twice.
-    pub(super) fn submit_with(&mut self, ctx: &Context, confirmed: bool) -> Result<(), pr_craft_engine::CommandError> {
+    /// already have gone through and posting again could post twice. Drafts on changed lines ask a second time (`outdated_ok`).
+    pub(super) fn submit_with(&mut self, ctx: &Context, confirmed: bool, outdated_ok: bool) -> Result<(), pr_craft_engine::CommandError> {
         if self.submitting.is_some() {
             return Ok(());
         }
@@ -544,12 +565,16 @@ impl Ready {
             self.confirm_post = true;
             return Ok(());
         }
+        if !outdated_ok && !self.outdated.is_empty() {
+            self.confirm_outdated = true;
+            return Ok(());
+        }
         self.error = None;
         self.notice = None;
         let (tx, rx) = mpsc::channel();
         let (ctx, change) = (ctx.clone(), self.view.change.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(engine::submit(&change, confirmed).map_err(crate::fail));
+            let _ = tx.send(engine::submit(&change, confirmed, outdated_ok).map_err(crate::fail));
             ctx.request_repaint();
         });
         self.submitting = Some(rx);

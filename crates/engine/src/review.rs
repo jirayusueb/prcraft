@@ -237,13 +237,20 @@ pub fn markdown(change: &ChangeRef, title: &str) -> Result<String, CommandError>
 ///
 /// A post that runs out of time may still have gone through, so it is neither forgotten nor retried: everything stays, the review is
 /// flagged `post_unknown`, and the next submit refuses until it is called with `confirm_unknown` after the reader checked the forge.
-pub fn submit(change: &ChangeRef, confirm_unknown: bool) -> Result<LocalReview, CommandError> {
+///
+/// Drafts written on an earlier commit whose lines the change's diff no longer has post only with `confirm_outdated`.
+pub fn submit(change: &ChangeRef, confirm_unknown: bool, confirm_outdated: bool) -> Result<LocalReview, CommandError> {
     let sent = local(change)?;
     check_postable(change.forge, &sent)?;
     check_unknown_confirmed(change, &sent, confirm_unknown)?;
     let dir = store::data_dir().map_err(CommandError::read)?;
     let kept = |error: ForgeError| failed_post(&dir, change, error);
     let meta = forge::change_meta(change).map_err(kept)?;
+    let moved = sent.anchor.as_ref().is_some_and(|written| *written != anchor_of(&meta));
+    if moved && !confirm_outdated {
+        let files = diff::parse_unified(&forge::diff(change).map_err(kept)?);
+        check_outdated_confirmed(anchor_of(&meta).outdated_drafts(&sent, &files).len(), false)?;
+    }
     let meta = anchored(meta, sent.anchor.as_ref());
     match change.forge {
         Forge::GitHub => {
@@ -293,6 +300,17 @@ fn check_unknown_confirmed(change: &ChangeRef, sent: &LocalReview, confirm_unkno
         "An earlier post to {forge} did not answer in time, and it may have gone through. Check {what} on {forge}, then submit again with confirm_unknown. Nothing was sent now.",
         forge = change.forge.name(),
         what = change.reference()
+    )))
+}
+
+/// Refuses to post drafts that sit on changed lines until the reader has said yes to each of them.
+fn check_outdated_confirmed(outdated: usize, confirm_outdated: bool) -> Result<(), CommandError> {
+    if outdated == 0 || confirm_outdated {
+        return Ok(());
+    }
+    Err(CommandError::Invalid(format!(
+        "{outdated} {} on lines that changed since you wrote them. Submit again with confirm_outdated to post them anyway. Nothing was sent.",
+        if outdated == 1 { "draft is" } else { "drafts are" }
     )))
 }
 
@@ -461,6 +479,14 @@ mod tests {
         posted(&mut now, &sent);
         assert_eq!(now.post_unknown, None, "a post that went through has a known outcome");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outdated_drafts_are_refused_without_confirm_outdated_and_posted_with_it() {
+        let refused = check_outdated_confirmed(2, false).expect_err("asks first").to_string();
+        assert!(refused.contains("2 drafts are on lines that changed") && refused.contains("confirm_outdated"), "{refused}");
+        assert!(check_outdated_confirmed(2, true).is_ok(), "after the reader said yes");
+        assert!(check_outdated_confirmed(0, false).is_ok(), "nothing outdated");
     }
 
     fn kept_review(dir: &Path, change: &ChangeRef) -> LocalReview {
